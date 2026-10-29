@@ -10,44 +10,22 @@ to ``toolset``."""
 
 import json
 import os
-import sys
+import socket
 import time
 
 import unreal
 
-from . import ADAPTER_VERSION
+from . import ADAPTER_VERSION, config
 
 DEFAULT_PORT = 8000
 SETTINGS_SECTION = "[/Script/ModelContextProtocolEngine.ModelContextProtocolSettings]"
 _path = ""
 
 
-def _settings_files() -> list:
-    """The ini files that set the MCP server, lowest priority first: the
-    project's defaults, then the user's Editor Preferences."""
-    project = unreal.Paths.convert_relative_path_to_full(unreal.Paths.project_dir())
-    platform = {"darwin": "Mac", "win32": "Windows"}.get(sys.platform, "Linux")
-    return [os.path.join(project, "Config", "DefaultEditorPerProjectUserSettings.ini"),
-            os.path.join(project, "Saved", "Config", f"{platform}Editor", "EditorPerProjectUserSettings.ini")]
-
-
 def _setting(key: str) -> str:
-    """The last value of ``key`` in the MCP settings section (the class's
-    properties are not exposed to Python)."""
-    value = ""
-    for path in _settings_files():
-        try:
-            lines = open(path, encoding="utf-8-sig").read().splitlines()
-        except OSError:
-            continue
-        inside = False
-        for line in lines:
-            line = line.strip()
-            if line.startswith("["):
-                inside = line == SETTINGS_SECTION
-            elif inside and line.split("=", 1)[0].strip() == key and "=" in line:
-                value = line.split("=", 1)[1].strip()
-    return value
+    """``key`` in the MCP server's settings (the class's properties are not
+    exposed to Python): the project's defaults, then the user's preferences."""
+    return config.read_layered("EditorPerProjectUserSettings", SETTINGS_SECTION, key)
 
 
 def server_port() -> int:
@@ -62,7 +40,7 @@ def server_path() -> str:
 
 
 def info() -> dict:
-    from .toolsets import TOOLSET
+    from .toolsets import ARG_DEFAULTS, TOOLSET
 
     return {
         "engine": "unreal",
@@ -75,6 +53,7 @@ def info() -> dict:
         "token": "",
         "transport": "unreal_mcp",
         "toolset": TOOLSET,
+        "defaults": ARG_DEFAULTS,
         "started_at": time.time(),
     }
 
@@ -91,8 +70,47 @@ def start() -> str:
     os.replace(tmp, path)
     _path = path
     unreal.register_python_shutdown_callback(stop)
-    unreal.log(f"[Mixar Link] {ADAPTER_VERSION} ready on 127.0.0.1:{server_port()}")
+    _watch_server()
     return path
+
+
+# The server can fail to bind right after an editor restart (the old socket
+# lingers): Unreal logs it and serves nothing. Until the port answers, retry.
+RETRY_EVERY_S = 2.0
+RETRY_FOR_S = 120.0
+
+
+def _listening(port: int) -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+        return True
+    except OSError:
+        return False
+
+
+def _watch_server() -> None:
+    port, started = server_port(), time.time()
+    state = {"handle": None, "next": started + RETRY_EVERY_S, "tries": 0}
+
+    def tick(_delta: float) -> None:
+        now = time.time()
+        if now < state["next"]:
+            return
+        state["next"] = now + RETRY_EVERY_S
+        if _listening(port) or now - started > RETRY_FOR_S:
+            unreal.unregister_slate_post_tick_callback(state["handle"])
+            if _listening(port):
+                unreal.log(f"[Mixar Link] {ADAPTER_VERSION} ready on 127.0.0.1:{port}"
+                           + (f" (after {state['tries']} server restarts)" if state["tries"] else ""))
+            else:
+                unreal.log_error(f"[Mixar Link] Unreal's MCP server is not listening on 127.0.0.1:{port}; "
+                                 "Mixar cannot reach this editor (is another program using the port?).")
+            return
+        state["tries"] += 1
+        unreal.SystemLibrary.execute_console_command(None, "ModelContextProtocol.StopServer")
+        unreal.SystemLibrary.execute_console_command(None, f"ModelContextProtocol.StartServer {port}")
+
+    state["handle"] = unreal.register_slate_post_tick_callback(tick)
 
 
 def stop() -> None:

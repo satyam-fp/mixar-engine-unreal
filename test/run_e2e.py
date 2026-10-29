@@ -3,17 +3,30 @@
 the plugin installed into a project, discovery, Unreal's MCP handshake, every
 tool through ``call_tool``, and the discovery file removed on close.
 
-    python3 test/run_e2e.py --project /path/to/Game.uproject [--editor /path/to/UnrealEditor]
+    python3 test/run_e2e.py --project /path/to/Game.uproject [--editor /path/to/UnrealEditor] \
+        [--packages DIR]
 
 The project's Plugins/MixarLink is replaced with this checkout's, the plugins
-Mixar Link needs are enabled in the .uproject and the MCP server is turned on
-(port 9880) in Config/DefaultEditorPerProjectUserSettings.ini. Exit code 0 =
-every check passed. The editor is opened and closed by the test.
+Mixar Link needs are enabled in the .uproject, the MCP server is turned on
+(port 9880) and the background throttle off in
+Config/DefaultEditorPerProjectUserSettings.ini, and the project is marked
+``owned`` (a game Mixar made). The project should have the third-person
+template's Mannequin.
+
+``--packages`` is a folder holding ``UEQA_PropYard`` and ``UEQA_Hero``, built
+by ``test/make_packages.py`` with the Mixar desktop's own exporter. With it the
+test also imports both, builds a level, places the 40 props (each at its
+manifest origin, tagged) and the Tripo character looping a retargeted Mannequin
+jog, plays, captures the game and the editor, reads the log, stops, checks the
+plugin-mode refusals, and that nothing under Content/ outside Content/Mixar
+changed. Exit code 0 = every check passed. The editor is opened and closed by
+the test.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import glob
 import json
 import os
@@ -29,6 +42,8 @@ LINK_DIR = os.path.join(os.path.expanduser("~"), ".mixar", "engine-link")
 NEEDED_PLUGINS = ("ModelContextProtocol", "AllToolsets", "PythonScriptPlugin", "EditorScriptingUtilities",
                   "MixarLink")
 SECTION = "[/Script/ModelContextProtocolEngine.ModelContextProtocolSettings]"
+THROTTLE = "[/Script/UnrealEd.EditorPerformanceSettings]"
+JOG = "/Game/Characters/Mannequins/Anims/Unarmed/Jog/MF_Unarmed_Jog_Fwd"
 PORT = 9880
 
 failures: list[str] = []
@@ -69,9 +84,32 @@ def install(uproject: str) -> None:
     text = open(ini, encoding="utf-8-sig").read() if os.path.exists(ini) else ""
     if SECTION not in text:
         text = text.rstrip("\n") + f"\n{SECTION}\nbAutoStartServer=True\nServerPortNumber={PORT}\n"
-        os.makedirs(os.path.dirname(ini), exist_ok=True)
-        with open(ini, "w", encoding="utf-8") as fh:
-            fh.write(text)
+    if THROTTLE not in text:
+        text = text.rstrip("\n") + f"\n{THROTTLE}\nbThrottleCPUWhenNotForeground=False\n"
+    os.makedirs(os.path.dirname(ini), exist_ok=True)
+    with open(ini, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    set_mode(project, "owned")
+
+
+def set_mode(project: str, mode: str) -> None:
+    with open(os.path.join(project, "Config", "DefaultMixarLink.ini"), "w", encoding="utf-8") as fh:
+        fh.write(f"[MixarLink]\nProjectMode={mode}\n")
+
+
+def content_snapshot(project: str) -> dict:
+    """Every file under Content/ outside Content/Mixar, with its mtime and size."""
+    out = {}
+    root = os.path.join(project, "Content")
+    for folder, dirs, files in os.walk(root):
+        if os.path.relpath(folder, root).split(os.sep)[0] == "Mixar":
+            dirs[:] = []
+            continue
+        for name in files:
+            path = os.path.join(folder, name)
+            st = os.stat(path)
+            out[os.path.relpath(path, root)] = (st.st_mtime, st.st_size)
+    return out
 
 
 class Mcp:
@@ -86,7 +124,7 @@ class Mcp:
         req.add_header("Accept", "application/json, text/event-stream")
         if self.session:
             req.add_header("Mcp-Session-Id", self.session)
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=600) as resp:
             headers = {k.lower(): v for k, v in resp.headers.items()}
             text = resp.read().decode()
         if "text/event-stream" in headers.get("content-type", ""):
@@ -114,15 +152,97 @@ class Mcp:
         return True, json.loads(value) if isinstance(value, str) else value, text
 
 
+def call(mcp, toolset, tool, arguments) -> tuple[bool, dict]:
+    ok, reply, text = mcp.tool(toolset, tool, arguments)
+    if not ok:
+        return False, {"error": text}
+    data = dict(reply.get("data") or {})
+    if not reply.get("ok"):
+        data["error"] = str(reply.get("error") or "")
+    return bool(reply.get("ok")), data
+
+
+def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
+    yard = os.path.join(packages, "UEQA_PropYard")
+    manifest = json.load(open(os.path.join(yard, "manifest.json")))
+    origins = {o["name"]: o["origin"] for o in manifest["engine"]["objects"]}
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": yard, "folder": "UEQA_PropYard"})
+    check("import_package: 40 props", ok and len(data.get("objects") or []) == 40 and data.get("meshes") == 40, data)
+    check("import_package: UCX hulls and mesh collision",
+          data.get("collision") == {"convex_hulls": 25, "complex_as_simple": 5}, data.get("collision"))
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": yard, "folder": "../Escape"})
+    check("import_package: a folder is a plain name", not ok, data)
+
+    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EYard", "template": "", "player_position": [-13, 0, 1],
+                                                "overwrite": True, "ground": True})
+    check("new_scene", ok and data.get("scene") == "/Game/Mixar/Levels/E2EYard" and data.get("main"), data)
+    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EYard", "template": "", "player_position": []})
+    check("new_scene: an existing level needs overwrite", not ok, data)
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_PropYard", "name": "", "position": [0, 0, 0],
+                                            "parent": "", "animation": ""})
+    check("place: the package", ok and data.get("actors") == 40 and data.get("node") == "Mixar/UEQA_PropYard", data)
+    ok, data = call(mcp, toolset, "scene_tree", {"max_nodes": 500})
+    placed = {n["path"].rsplit("/", 1)[-1]: n for n in data.get("nodes") or []
+              if n["path"].startswith("Mixar/UEQA_PropYard/")}
+    off = [n for n, o in origins.items()
+           if n not in placed or max(abs(a - b) for a, b in zip(placed[n]["position"], o)) > 0.01]
+    check("place: every object at its manifest origin (Blender frame)", len(placed) == 40 and not off, off[:5])
+    door = placed.get("Door_03", {}).get("tags") or []
+    check("place: tags ride as actor tags", "mixar_role=door" in door and "mixar_pivot=hinge_z" in door, door)
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/ThirdPerson", "name": "", "position": [0, 0, 0],
+                                            "parent": "", "animation": ""})
+    check("place: only packages under /Game/Mixar", not ok, data)
+
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": os.path.join(packages, "UEQA_Hero"),
+                                                     "folder": "UEQA_Hero"})
+    chains = (data.get("retarget") or {}).get("chains") or []
+    check("import_package: character with a Mannequin retargeter",
+          ok and {"Spine", "Neck", "Head", "LeftLeg", "RightArm"} <= set(chains), data.get("retarget"))
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Hero", "name": "Hero",
+                                            "position": [-9.5, 1.0, 0], "yaw_deg": -90, "parent": "",
+                                            "animation": JOG})
+    check("place: the character loops a retargeted Mannequin clip",
+          ok and data.get("animation") == "/Game/Mixar/UEQA_Hero/Anims/MF_Unarmed_Jog_Fwd_UEQA_Hero", data)
+
+    ok, data = call(mcp, toolset, "play", {"scene": "main"})
+    check("play", ok and data.get("playing") and data.get("scene") == "/Game/Mixar/Levels/E2EYard", data)
+    since = data.get("log_seq", 0)
+    ok, data = call(mcp, toolset, "capture", {"source": "game", "max_width": 640})
+    png = base64.b64decode(data.get("image_base64") or "")
+    check("capture: a game frame", ok and png[:8] == b"\x89PNG\r\n\x1a\n" and data.get("width") == 640, len(png))
+    ok, data = call(mcp, toolset, "log", {"since": since, "max_lines": 50})
+    check("log: lines since play", ok and data.get("lines") and data["lines"][0]["seq"] > since, data.get("next"))
+    ok, data = call(mcp, toolset, "log", {"since": 0, "max_lines": 20, "errors_only": True})
+    check("log: errors_only", ok and all(l["level"] != "info" for l in data.get("lines") or []), data.get("lines", [])[:1])
+    ok, data = call(mcp, toolset, "stop", {})
+    check("stop", ok and data.get("playing") is False, data)
+    ok, data = call(mcp, toolset, "capture", {"source": "editor"})
+    check("capture: the editor viewport", ok and base64.b64decode(data.get("image_base64") or "")[:4] == b"\x89PNG",
+          data.get("error"))
+
+    set_mode(project, "plugin")  # the user's own project: Mixar's own levels only
+    ok, data = call(mcp, toolset, "open_scene", {"scene": "/Game/ThirdPerson/Lvl_ThirdPerson"})
+    check("open_scene: another level", ok, data)
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_PropYard", "name": "", "position": [0, 0, 0],
+                                            "parent": "", "animation": ""})
+    check("plugin mode: the user's level is not edited", not ok and "plugin mode" in data.get("error", ""), data)
+    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EPlugin", "template": "", "player_position": [],
+                                                "overwrite": True})
+    check("plugin mode: Mixar's own level, but not the main level", ok and not data.get("main"), data)
+    set_mode(project, "owned")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", required=True, help="the .uproject to test in")
     ap.add_argument("--editor", default="")
     ap.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for the editor")
+    ap.add_argument("--packages", default="", help="folder with UEQA_PropYard and UEQA_Hero (make_packages.py)")
     args = ap.parse_args()
     uproject = os.path.abspath(args.project)
     editor = args.editor or find_editor()
     install(uproject)
+    before = content_snapshot(os.path.dirname(uproject))
     check("plugin installed", os.path.isfile(os.path.join(os.path.dirname(uproject), "Plugins", "MixarLink",
                                                           "MixarLink.uplugin")))
 
@@ -174,6 +294,9 @@ def main() -> int:
 
         ok, _, text = mcp.tool(toolset, "no_such_tool", {})
         check("unknown tool refused", not ok and text, text)
+
+        if args.packages:
+            package_checks(mcp, toolset, os.path.abspath(args.packages), os.path.dirname(uproject))
     finally:
         if proc.poll() is None:
             proc.send_signal(signal.SIGTERM if sys.platform != "win32" else signal.CTRL_BREAK_EVENT)
@@ -183,6 +306,10 @@ def main() -> int:
                 proc.kill()
     if sys.platform != "win32":
         check("discovery file removed on close", not os.path.exists(discovery))
+    if args.packages:
+        changed = [p for p, v in content_snapshot(os.path.dirname(uproject)).items() if before.get(p) != v]
+        changed += [p for p in before if not os.path.exists(os.path.join(os.path.dirname(uproject), "Content", p))]
+        check("nothing under Content/ outside Content/Mixar changed", not changed, changed[:5])
     print(f"\n{'OK' if not failures else 'FAILED'}: {len(failures)} failure(s)")
     return 1 if failures else 0
 
