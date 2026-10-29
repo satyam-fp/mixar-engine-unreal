@@ -17,12 +17,17 @@ import os
 
 import unreal
 
-from . import MIXAR_FOLDER, config, frames, retarget
+from . import MIXAR_FOLDER, config, frames, game, retarget
 
 LEVELS = f"{MIXAR_FOLDER}/Levels"
 INSTANCE_FOLDER = "Mixar"
 MAPS_SECTION = "[/Script/EngineSettings.GameMapsSettings]"
 GROUND_SIZE_M = 60.0
+NAV_LABEL = "MixarNavigation"
+# Roles the template game moves at run time, so their actors are Movable.
+MOVING_ROLES = {"pickup", "door", "hazard", "enemy"}
+# Roles the player walks through: they never block navigation.
+WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn"}
 
 
 def _sub(cls):
@@ -119,8 +124,16 @@ def _defaults(ground: bool, player_position) -> None:
 
 
 def new_scene(name: str, set_as_main: bool, with_defaults: bool, overwrite: bool, ground: bool,
-              player_position) -> dict:
+              player_position, template: str = "") -> dict:
     path = f"{LEVELS}/{name}"
+    game_mode = None
+    if template:
+        classes = game.ensure()
+        if "error" in classes:
+            return classes
+        game_mode = classes.get(template)
+        if game_mode is None:
+            return {"error": f"No template {template!r}; use one of {', '.join(sorted(classes))}."}
     exists = unreal.EditorAssetLibrary.does_asset_exist(path)
     if exists and not overwrite:
         return {"error": f"{path} exists; open it with open_scene, or pass overwrite."}
@@ -142,14 +155,66 @@ def new_scene(name: str, set_as_main: bool, with_defaults: bool, overwrite: bool
         _defaults(ground, player_position)
     elif ground:
         _defaults(True, player_position)
+    if game_mode is not None:
+        _make_game(game_mode, player_position)
     save()
     out = {"scene": path, "main": False}
+    if template:
+        out["template"] = template
+        out["game_mode"] = game_mode.get_path_name().split(".", 1)[0]
     if set_as_main:
         note = set_main(path)
         out["main"] = not note
         if note:
             out["note"] = note
     return out
+
+
+def _make_game(game_mode, player_position) -> None:
+    """The level runs ``game_mode`` (World Settings override), has a
+    PlayerStart and a navigation volume playtests route by."""
+    world().get_world_settings().set_editor_property("default_game_mode", game_mode)
+    actors = _sub(unreal.EditorActorSubsystem).get_all_level_actors()
+    if not any(isinstance(a, unreal.PlayerStart) for a in actors):
+        start = frames.from_blender(player_position) if player_position else (0.0, 0.0, 100.0)
+        _spawn(unreal.PlayerStart, start, label="PlayerStart")
+    if not any(a.get_actor_label() == NAV_LABEL for a in actors):
+        _spawn(unreal.NavMeshBoundsVolume, (0.0, 0.0, 0.0), label=NAV_LABEL)
+    fit_navigation()
+
+
+def fit_navigation() -> bool:
+    """Stretch the level's MixarNavigation volume over everything with
+    collision, and let its navigation mesh rebuild while the game runs (a
+    door that opens opens the way). False when the level has none."""
+    actors = _sub(unreal.EditorActorSubsystem).get_all_level_actors()
+    volume = next((a for a in actors if a.get_actor_label() == NAV_LABEL), None)
+    if volume is None:
+        return False
+    lo, hi = [1e9, 1e9, 1e9], [-1e9, -1e9, -1e9]
+    for actor in actors:
+        if not isinstance(actor, unreal.StaticMeshActor) or actor.get_actor_label() == "Ground":
+            continue
+        origin, extent = actor.get_actor_bounds(True)
+        for i, axis in enumerate("xyz"):
+            lo[i] = min(lo[i], getattr(origin, axis) - getattr(extent, axis))
+            hi[i] = max(hi[i], getattr(origin, axis) + getattr(extent, axis))
+    if lo[0] > hi[0]:  # nothing placed yet: the 60 m around the origin
+        lo, hi = [-3000.0, -3000.0, -500.0], [3000.0, 3000.0, 500.0]
+    margin = 500.0
+    center = [(a + b) / 2 for a, b in zip(lo, hi)]
+    size = [b - a + 2 * margin for a, b in zip(lo, hi)]
+    volume.set_actor_location(unreal.Vector(*center), False, True)
+    # The editor's volume factory builds a 200 cm box brush.
+    volume.set_actor_scale3d(unreal.Vector(*[max(s, 400.0) / 200.0 for s in size]))
+    nav = unreal.NavigationSystemV1.get_navigation_system(world())
+    if nav:
+        nav.on_navigation_bounds_updated(volume)
+    for actor in _sub(unreal.EditorActorSubsystem).get_all_level_actors():
+        if isinstance(actor, unreal.RecastNavMesh):
+            actor.set_editor_property("runtime_generation", unreal.RuntimeGenerationType.DYNAMIC)
+    unreal.SystemLibrary.execute_console_command(world(), "RebuildNavigation")
+    return True
 
 
 def open_scene(path: str) -> dict:
@@ -213,7 +278,7 @@ def _unique(label: str) -> str:
 def _set_body(actor, component, asset) -> None:
     body = _meta(asset, "mixar_body") or "static"
     collision = _meta(asset, "mixar_collision")
-    if body == "static":
+    if body == "static" and _meta(asset, "mixar_role") not in MOVING_ROLES:
         component.set_mobility(unreal.ComponentMobility.STATIC)
     else:
         component.set_mobility(unreal.ComponentMobility.MOVABLE)
@@ -221,7 +286,7 @@ def _set_body(actor, component, asset) -> None:
         component.set_simulate_physics(True)
     if body == "none" or collision == "none":
         component.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
-    if _meta(asset, "mixar_nav") == "ignore":
+    if _meta(asset, "mixar_nav") == "ignore" or _meta(asset, "mixar_role") in WALKED_ROLES:
         component.set_editor_property("can_ever_affect_navigation", False)
 
 

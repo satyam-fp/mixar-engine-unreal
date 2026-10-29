@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.2.0",
+	"VersionName": "0.3.0",
 	"FriendlyName": "Mixar Link",
 	"Description": "Lets the Mixar agent work in this project: Mixar's toolsets for Unreal's Model Context Protocol server.",
 	"Category": "Other",
@@ -15,6 +15,7 @@
 		{ "Name": "ModelContextProtocol", "Enabled": true },
 		{ "Name": "ToolsetRegistry", "Enabled": true },
 		{ "Name": "PythonScriptPlugin", "Enabled": true },
-		{ "Name": "EditorScriptingUtilities", "Enabled": true }
+		{ "Name": "EditorScriptingUtilities", "Enabled": true },
+		{ "Name": "EditorToolset", "Enabled": true }
 	]
 }

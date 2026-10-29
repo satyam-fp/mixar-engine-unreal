@@ -40,7 +40,7 @@ def server_path() -> str:
 
 
 def info() -> dict:
-    from .toolsets import ARG_DEFAULTS, TOOLSET
+    from .toolsets import ARG_DEFAULTS, JSON_ARGS, TOOLSET
 
     return {
         "engine": "unreal",
@@ -54,6 +54,7 @@ def info() -> dict:
         "transport": "unreal_mcp",
         "toolset": TOOLSET,
         "defaults": ARG_DEFAULTS,
+        "json_args": JSON_ARGS,
         "started_at": time.time(),
     }
 

@@ -96,6 +96,8 @@ def play(scene: str):
             return done(_err(opened["error"]))
     if not level.level_path():
         return done(_err("No level is open."))
+    if not playing() and not level.refusal() and level.fit_navigation():
+        level.save()
     since = logs.latest()
     scene_path = level.level_path()
     # A previous session first ends, then the new one is requested and awaited.

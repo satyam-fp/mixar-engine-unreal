@@ -8,6 +8,8 @@ Writes into <out dir>:
 - ``UEQA_PropYard``: 40 props in a 8 x 5 grid, mixed roles (prop, pickup,
   door with a hinge, hazard, goal), bodies and collision shapes (box, convex,
   mesh, none) — each object keeps its own origin;
+- ``UEQA_Course``: a small winnable level (coins, a hinged door in the only
+  gap of a wall, the flag behind it, a spike, a spawn and a checkpoint);
 - ``UEQA_Hero``: the rigged character (a Tripo auto-rig), when given.
 
 The exporter is loaded straight from the client's ``space_mixie_chat/core``
@@ -101,6 +103,59 @@ def prop_yard():
     print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
 
 
+def course():
+    """A small level a player can win: three coins on the way to a wall whose
+    only gap is a hinged door; the flag behind it. A spike off the path, a
+    checkpoint pad halfway. Floor 30 x 12 m; the wall runs to the floor's
+    edges, so the door is the only way through."""
+    from mathutils import Matrix  # noqa: PLC0415 - Blender only
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    names = []
+
+    def box(name, size, at, tags, rgb, pivot_offset=(0.0, 0.0, 0.0)):
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.0))
+        obj = bpy.context.object
+        obj.data.transform(Matrix.Diagonal((*size, 1.0)))
+        obj.data.transform(Matrix.Translation(pivot_offset))
+        obj.location = at
+        add(obj, name, tags, rgb)
+
+    def add(obj, name, tags, rgb):
+        obj.name = obj.data.name = name
+        obj.data.materials.append(material(f"M_{name}", rgb))
+        for key, value in tags.items():
+            obj[key] = value
+        names.append(name)
+
+    static = {"mixar_role": "prop", "mixar_body": "static", "mixar_collision": "box"}
+    box("Floor", (30.0, 12.0, 0.2), (6.0, 0.0, -0.1), static, (0.35, 0.35, 0.38))
+    box("WallLeft", (0.3, 5.0, 3.0), (9.0, 3.5, 1.5), static, (0.5, 0.45, 0.4))
+    box("WallRight", (0.3, 5.0, 3.0), (9.0, -3.5, 1.5), static, (0.5, 0.45, 0.4))
+    # Origin on the hinge edge (y = -1), the leaf spanning the 2 m gap.
+    box("Door", (0.2, 2.0, 2.5), (9.0, -1.0, 0.0),
+        {"mixar_role": "door", "mixar_body": "kinematic", "mixar_collision": "box", "mixar_pivot": "hinge_z"},
+        (0.45, 0.25, 0.1), pivot_offset=(0.0, 1.0, 1.25))
+    box("Spawn", (0.8, 0.8, 0.05), (-6.0, 0.0, 0.025),
+        {"mixar_role": "spawn", "mixar_body": "none", "mixar_collision": "none"}, (0.2, 0.4, 0.9))
+    box("Checkpoint", (1.0, 1.0, 0.05), (4.0, 0.0, 0.025),
+        {"mixar_role": "checkpoint", "mixar_body": "none", "mixar_collision": "none"}, (0.9, 0.9, 0.2))
+    for i, (x, y) in enumerate(((-2.0, 0.0), (2.0, 2.5), (6.0, -2.5))):
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.3, depth=0.08, location=(x, y, 0.8),
+                                            rotation=(math.radians(90), 0.0, 0.0))
+        add(bpy.context.object, f"Coin_{i}", {"mixar_role": "pickup", "mixar_body": "static",
+                                              "mixar_collision": "convex"}, (0.95, 0.75, 0.1))
+    bpy.ops.mesh.primitive_cone_add(radius1=0.5, depth=0.8, location=(2.0, -4.5, 0.4))
+    add(bpy.context.object, "Spikes", {"mixar_role": "hazard", "mixar_body": "static",
+                                       "mixar_collision": "convex"}, (0.8, 0.1, 0.1))
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.4, depth=2.0, location=(13.0, 0.0, 1.0))
+    add(bpy.context.object, "Flag", {"mixar_role": "goal", "mixar_body": "none", "mixar_collision": "none"},
+        (0.1, 0.7, 0.2))
+    result = export_package.export_package(names, fmt="fbx", folder="UEQA_Course", engine="unreal",
+                                           bake_materials=False)
+    print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
+
+
 def hero(glb):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.gltf(filepath=glb)
@@ -117,5 +172,6 @@ def hero(glb):
 
 
 prop_yard()
+course()
 if rig:
     hero(rig)

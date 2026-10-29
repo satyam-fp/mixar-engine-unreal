@@ -19,7 +19,8 @@ import unreal
 import toolset_registry
 from toolset_registry.registration import Registration
 
-from . import ADAPTER_VERSION, MIXAR_FOLDER, config, frames, level, logs, package, play
+from . import (ADAPTER_VERSION, MIXAR_FOLDER, blueprints, config, frames, game_spec, level, logs, nodes,
+               package, play, playtest)
 
 # The server's name for this toolset (module path + class name); the desktop
 # reads it from the discovery file.
@@ -27,7 +28,7 @@ TOOLSET = "mixar_link.toolsets.MixarLinkTools"
 # The engine calls this release answers (status lists them, so the agent works
 # only with these while Unreal's coverage grows toward Godot's).
 TOOLS = ("status", "scene_tree", "import_package", "new_scene", "open_scene", "save_scene", "place",
-         "remove_node", "play", "stop", "capture", "log")
+         "remove_node", "add_node", "set_property", "blueprint", "play", "stop", "capture", "log", "playtest")
 MAX_NODES = 2000
 # Defaults Unreal's tool schema cannot carry (it gives only numbers and bools a
 # default; a string, a list or None makes the argument required). The
@@ -38,7 +39,12 @@ ARG_DEFAULTS = {
     "place": {"name": "", "position": [0.0, 0.0, 0.0], "parent": "", "animation": ""},
     "play": {"scene": "main"},
     "capture": {"source": "game"},
+    "add_node": {"parent": "", "script": "", "position": []},
+    "blueprint": {"path": "", "graph": "", "code": "", "name": "", "type": "", "parent": "", "query": ""},
 }
+# Arguments of any JSON shape, which Unreal's tool schema cannot type: the
+# desktop sends each as one JSON-encoded string (the discovery file lists them).
+JSON_ARGS = {"playtest": ["steps"], "set_property": ["value"]}
 
 
 def _ok(data: dict) -> str:
@@ -58,6 +64,16 @@ def _reply(out: dict) -> str:
 
 def _sub(cls):
     return unreal.get_editor_subsystem(cls)
+
+
+def _async(start):
+    """An async tool's result; a failure while starting it is the answer, not
+    a broken call."""
+    try:
+        return start()
+    except Exception as exc:  # noqa: BLE001
+        unreal.log_error(f"[Mixar Link] {exc}")
+        return play.done(_err(str(exc)))
 
 
 def _package(obj) -> str:
@@ -174,19 +190,21 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             set_main: Make it the project's main level (owned projects only).
             with_defaults: Add a sun, sky, fog and a PlayerStart.
             overwrite: Replace an existing level of that name.
-            template: Not available in Unreal yet; leave empty.
+            template: A playable game around the level: third_person, top_down
+                or platformer (the BP_MixarGameMode rules: pickups open doors, a
+                goal wins once they are open, hazards and falls respawn; a HUD).
             ground: Add a 60 m floor.
             player_position: Where the PlayerStart goes (Blender frame).
 
         Returns:
             JSON: {"ok", "data": {scene, main}}.
         """
-        if template:
-            return _err("Game templates are not in Mixar Link for Unreal yet; make the level without one.")
+        if template and template not in game_spec.TEMPLATES:
+            return _err(f"template must be one of {', '.join(game_spec.TEMPLATES)}.")
         if not name or not all(c.isalnum() or c == "_" for c in name) or len(name) > 64:
             return _err("name must be letters, digits and _ (at most 64).")
         return _reply(level.new_scene(name, set_main, with_defaults, overwrite, ground,
-                                      list(player_position) if player_position else None))
+                                      list(player_position) if player_position else None, template or ""))
 
     @toolset_registry.tool_call
     @staticmethod
@@ -250,6 +268,82 @@ class MixarLinkTools(unreal.ToolsetDefinition):
 
     @toolset_registry.tool_call
     @staticmethod
+    def add_node(type: str, name: str, parent: str, script: str, position: list[float]) -> str:  # noqa: A002
+        """Adds an actor to the open level and saves it.
+
+        Args:
+            type: A built-in actor class (PointLight, TriggerBox, TextRenderActor,
+                /Script/Engine.SpotLight …) or a Blueprint under /Game/Mixar.
+            name: The actor's label.
+            parent: Attach to this actor (a scene_tree path).
+            script: A Blueprint path to spawn instead of ``type`` (Godot's script).
+            position: Blender frame (Z up, metres).
+
+        Returns:
+            JSON: {"ok", "data": {node, type, scene}}.
+        """
+        at = list(position) if position else None
+        if at is not None and len(at) != 3:
+            return _err("position must be [x, y, z].")
+        return _reply(nodes.add_node(script or type, name, parent or "", at))
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def set_property(node: str, property: str, value: str) -> str:  # noqa: A002
+        """Sets one property of an actor (or ``Component.Property``) in the open level and saves it.
+
+        Args:
+            node: A scene_tree path or an actor label.
+            property: position / yaw_deg (Blender frame), scale, label, hidden, tags, or
+                any property name (Unreal units), a Blueprint variable included.
+            value: The value, JSON-encoded.
+
+        Returns:
+            JSON: {"ok", "data": {node, property, scene}}.
+        """
+        return _reply(nodes.set_property(node, property, value))
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def blueprint(action: str, path: str, graph: str, code: str, name: str, type: str,  # noqa: A002
+                  parent: str, query: str, output: bool = False) -> str:
+        """Makes, reads and writes Blueprints (Epic's graph DSL); writes only under /Game/Mixar.
+
+        Args:
+            action: docs | create | read | write | add_variable | add_param |
+                find_nodes | node_pins | compile.
+            path: The Blueprint (/Game/Mixar/Blueprints/BP_Name).
+            graph: EventGraph (default) or a function's name (write makes it).
+            code: write only: (event …) / (fn …) forms; each replaces that graph part.
+            name: add_variable / add_param: the name.
+            type: add_variable / add_param: bool, int, float, string, name, text,
+                Vector, Rotator, Transform, LinearColor, or a class path; [] = array.
+            parent: create only: Actor, Character, ActorComponent, … or a class path.
+            query: find_nodes: a search text; node_pins: a node type id.
+            output: add_param only: an output instead of an input.
+
+        Returns:
+            JSON: {"ok", "data": {...}}.
+        """
+        return _reply(blueprints.blueprint(action, path, graph, code, name, type, parent, query, bool(output)))
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def playtest(steps: str) -> unreal.ToolCallAsyncResultString:
+        """Plays the running game with scripted steps and reports the game state after each.
+
+        Args:
+            steps: JSON list of steps: {hold, seconds} | {press} | {wait} |
+                {walk_to: [x, y, z] Blender frame, timeout} | {prove_loop: true, timeout}
+                | {inspect: {node, properties}} | {state: true}.
+
+        Returns:
+            JSON: {"ok", "data": {steps, final_state}}.
+        """
+        return _async(lambda: playtest.run(steps))
+
+    @toolset_registry.tool_call
+    @staticmethod
     def play(scene: str) -> unreal.ToolCallAsyncResultString:
         """Runs the game in the editor (Play In Editor) and waits until its player exists.
 
@@ -259,7 +353,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
         Returns:
             JSON: {"ok", "data": {playing, game_connected, scene, log_seq}}.
         """
-        return play.play(scene or "main")
+        return _async(lambda: play.play(scene or "main"))
 
     @toolset_registry.tool_call
     @staticmethod
@@ -269,7 +363,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
         Returns:
             JSON: {"ok", "data": {playing}}.
         """
-        return play.stop()
+        return _async(lambda: play.stop())
 
     @toolset_registry.tool_call
     @staticmethod
@@ -283,7 +377,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
         Returns:
             JSON: {"ok", "data": {source, width, height, image_base64, image_mime}}.
         """
-        return play.capture(source if source in ("game", "editor") else "game", max_width)
+        return _async(lambda: play.capture(source if source in ("game", "editor") else "game", max_width))
 
     @toolset_registry.tool_call
     @staticmethod
