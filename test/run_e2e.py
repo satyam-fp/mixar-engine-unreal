@@ -159,6 +159,7 @@ def main() -> int:
         check("status: project and level", data.get("project_name") == info.get("project_name")
               and str(data.get("edited_scene", "")).startswith("/"), data)
         check("status: adapter version", data.get("adapter_version") == info.get("adapter_version"), data)
+        check("status: lists its tools", {"status", "scene_tree"} <= set(data.get("tools") or []), data)
 
         ok, reply, text = mcp.tool(toolset, "scene_tree", {"max_nodes": 5})
         data = reply.get("data") or {}

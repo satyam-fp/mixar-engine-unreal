@@ -22,6 +22,9 @@ from . import ADAPTER_VERSION, MIXAR_FOLDER, frames
 # The server's name for this toolset (module path + class name); the desktop
 # reads it from the discovery file.
 TOOLSET = "mixar_link.toolsets.MixarLinkTools"
+# The engine calls this release answers (status lists them, so the agent works
+# only with these while Unreal's coverage grows toward Godot's).
+TOOLS = ("status", "scene_tree")
 MAX_NODES = 2000
 
 
@@ -94,7 +97,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
 
         Returns:
             JSON: {"ok", "data": {engine, version, project_name, edited_scene,
-            main_scene, playing, adapter_version, mixar_folder}}.
+            main_scene, playing, adapter_version, mixar_folder, tools}}.
         """
         world = _world()
         return _ok({
@@ -106,6 +109,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             "playing": _playing(),
             "adapter_version": ADAPTER_VERSION,
             "mixar_folder": MIXAR_FOLDER,
+            "tools": list(TOOLS),
         })
 
     @toolset_registry.tool_call
