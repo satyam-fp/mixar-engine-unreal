@@ -18,7 +18,9 @@ Mixar agent drives either engine with the same calls.
    plugins below and opens the editor.
 2. By hand: unzip [`MixarLink.zip`](https://github.com/satyam-fp/mixar-engine-unreal/releases/latest/download/MixarLink.zip)
    into your project's `Plugins/` folder, enable `ModelContextProtocol`,
-   `AllToolsets`, `PythonScriptPlugin` and `EditorScriptingUtilities`, and turn
+   `AllToolsets` (it brings `EditorToolset`, whose Blueprint tools the template
+   game and the `blueprint` tool use), `PythonScriptPlugin` and
+   `EditorScriptingUtilities`, and turn
    on the MCP server (`Config/DefaultEditorPerProjectUserSettings.ini`):
 
    ```ini
@@ -53,21 +55,55 @@ Positions are Blender's frame (right-handed, Z up, metres): Unreal
 | --- | --- |
 | `status` | Engine, project, the open level, the main level, whether the game runs, the project mode, `log_seq`, the tools this release has |
 | `import_package` | A Mixar package (an `export_asset(engine="unreal")` folder) into `/Game/Mixar/<folder>`: one StaticMesh per object in its own local space (its pivot stays at its origin) with its `UCX_` hulls, complex-as-simple for mesh collision, its `mixar_*` tags as asset metadata. A rigged humanoid imports as a SkeletalMesh, and its bone map builds an IK Rig and an IK Retargeter from the project's UE5 Mannequin |
-| `new_scene` | Makes `/Game/Mixar/Levels/<name>` with a sun, sky, fog and a PlayerStart (a 60 m floor on request), opens it, optionally sets it as the main level |
+| `new_scene` | Makes `/Game/Mixar/Levels/<name>` with a sun, sky, fog and a PlayerStart (a 60 m floor on request), opens it, optionally sets it as the main level. `template` makes it a playable game (below) |
 | `open_scene` / `save_scene` | Opens / saves a level |
 | `place` | Puts a package into the open level, one actor per object at its origin, moved and turned as a whole, under the outliner folder `Mixar/<instance>`; tags ride as actor tags (`mixar_role=pickup` …), `mixar_body` sets mobility and physics. A character can loop an animation: a Mannequin clip is retargeted onto it first |
 | `remove_node` | Removes an actor, or a placed package's folder |
+| `add_node` | Spawns an actor of a built-in class (`PointLight`, `TriggerBox`, `TextRenderActor` …) or of a Blueprint under `/Game/Mixar`, at a Blender-frame position, optionally attached |
+| `set_property` | Sets one property of an actor or of a component (`Component.Property`), a Blueprint variable included. `position` / `yaw_deg` are Blender's frame; other values Unreal's own (lists become vectors, rotators `[roll, pitch, yaw]` and colours; paths load assets and classes; enums by name) |
+| `blueprint` | Makes, reads and writes Blueprints with Epic's EditorToolset: graphs in its S-expression DSL (`docs` prints it), variables, function parameters, node-type and pin lookup, compile. Writing an `(event …)` / `(fn …)` form replaces that part of the graph; a write compiles and returns compile errors. Writes only under `/Game/Mixar`, never in `/Game/Mixar/Game`, and not while the game runs |
 | `scene_tree` | The open level's actors: outliner path, class, position, yaw, the mesh or Blueprint it instances, Mixar tags, attachments |
 | `play` / `stop` | Play In Editor, answered once the player has a pawn; stop |
 | `capture` | A PNG of the running game (`HighResShot`) or of the level editor's viewport (Epic's `CaptureViewport`, which renders with the editor in the background) |
 | `log` | Editor and game log lines after a `log_seq`; `errors_only` keeps errors and warnings |
+| `playtest` | Plays the running game with scripted steps and returns the game state after each: `hold` / `press` an input action, `wait`, `walk_to` a Blender-frame point (routed over the navigation mesh; reached / stuck / timed_out / no_path), `prove_loop` (every pickup nearest first, then the goal: `won`, `unreached`), `inspect` an actor's live properties, `state` |
 
-`play`, `stop` and `capture` answer asynchronously (`ToolCallAsyncResultString`),
-so the editor keeps running while they wait.
+`play`, `stop`, `capture` and `playtest` answer asynchronously
+(`ToolCallAsyncResultString`), so the editor keeps running while they wait.
 
 Unreal's tool schema gives only numbers and bools a default. The defaults it
 cannot carry (strings, lists) are published in the discovery file
-(`defaults`), and the Mixar desktop fills them in.
+(`defaults`), and the Mixar desktop fills them in. Arguments of any JSON shape
+(`playtest`'s `steps`, `set_property`'s `value`) travel as one JSON-encoded
+string; the discovery file lists them (`json_args`).
+
+### The template game
+
+`new_scene(template=…)` runs the level on a GameMode Mixar Link builds once per
+project (and rebuilds in place after an upgrade) under `/Game/Mixar/Game`,
+written with Epic's Blueprint graph DSL from `mixar_link/game_spec.py`:
+
+- `BP_MixarGameMode` (child of the project's `BP_ThirdPersonGameMode`, so the
+  third-person character and its Enhanced Input come along) keeps the rules
+  the `mixar_role` tags drive, as Mixar Link for Godot's game does: pickups
+  spin and are collected on touch, all collected opens the doors (`mixar_pivot`
+  `hinge_*` swings 90°, `slide_*` slides), the goal wins once they are open,
+  hazards and enemies (patrolling 4 m with `slide_*`) and a 25 m fall respawn
+  at the spawn or the last checkpoint, triggers report on entry;
+- `BP_MixarGameMode_TopDown` (camera above, W = north) and
+  `BP_MixarGameMode_Platformer` (side view from Blender −Y, the player keeps
+  its lane) change only the camera and movement;
+- `BP_MixarHUD` draws the collected count and the win / lose banner.
+
+They are ordinary Blueprints in the project, so a packaged game carries them.
+Other Blueprints talk to the rules through the GameMode's
+`OnMixarEvent(Event, Source)` and report values to playtests with
+`ReportState(Key, Value)`. The level also gets a `MixarNavigation` volume, fitted
+to the level at each `play`, whose navigation mesh rebuilds as doors open.
+
+The first template build takes about a minute (Epic's transpiler looks every
+node type up); later levels reuse it. It needs the project's
+`/Game/ThirdPerson` (every project made from the Third Person template has it).
 
 ### What Mixar may change
 
@@ -77,6 +113,8 @@ Mannequin's IK Rig). `Config/DefaultMixarLink.ini` holds the project mode:
 - `owned` — a game Mixar made. Mixar edits any level and sets the main level.
 - `plugin` (the default) — your own project. Mixar edits only levels under
   `/Game/Mixar` and changes no project settings.
+
+Blueprints are written under `/Game/Mixar` in both modes.
 
 ## Test
 
@@ -89,8 +127,12 @@ python3 test/run_e2e.py --project /path/to/Game.uproject --packages /tmp/ue_pkgs
 
 The test copies the plugin into the project, opens the editor, checks discovery
 and every tool over MCP (40 props at their manifest origins, a Tripo character
-looping a retargeted Mannequin jog, play, frames, log, the plugin-mode refusals,
-nothing under `Content/` outside `Content/Mixar` changed) and closes the editor.
+looping a retargeted Mannequin jog, play, frames, log; a third-person template
+game around the course package won by `prove_loop`, input moving the player, a
+Blueprint written through `blueprint`, placed with `add_node`, tuned with
+`set_property` and turning in play, top-down movement; the plugin-mode
+refusals, nothing under `Content/` outside `Content/Mixar` changed) and closes
+the editor.
 The project should come from the third-person template, which has the Mannequin.
 Exit code 0 = every check passed.
 

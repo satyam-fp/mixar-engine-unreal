@@ -27,6 +27,7 @@ MIXAR NOTES
       (:CastFailed))
   Events: pickup, hazard, checkpoint, goal, lose, restart. Report your own values to
   playtests with (Class|BPMixarGameMode|ReportState :self gm :Key "time_left" :Value ...).
+- Variables made with add_variable are editable per placed actor: set_property sets them.
 - Actors placed from Mixar packages carry tags such as mixar_role=pickup;
   (Actor|GetAllActorswithTag :Tag "mixar_role=door") finds them.
 - Units are centimetres, Z up; Blender (x, y, z) m is Unreal (100x, -100y, 100z) cm.
@@ -146,6 +147,8 @@ def blueprint(action: str, path: str, graph: str, code: str, name: str, type_nam
                 bt.add_object_variable(bp, name, cls, None, container)
             else:
                 bt.add_variable(bp, name, base, None, container)
+            # Editable per placed actor, so set_property can tune each one.
+            bt.set_variable_instance_editable(bp, name, True)
             bt.compile_blueprint(bp, False)
             unreal.EditorAssetLibrary.save_loaded_asset(bp, False)
             return _summary(bt, bp)

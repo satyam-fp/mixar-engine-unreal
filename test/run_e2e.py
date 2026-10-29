@@ -220,6 +220,8 @@ def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
     check("capture: the editor viewport", ok and base64.b64decode(data.get("image_base64") or "")[:4] == b"\x89PNG",
           data.get("error"))
 
+    game_checks(mcp, toolset, packages)
+
     set_mode(project, "plugin")  # the user's own project: Mixar's own levels only
     ok, data = call(mcp, toolset, "open_scene", {"scene": "/Game/ThirdPerson/Lvl_ThirdPerson"})
     check("open_scene: another level", ok, data)
@@ -230,6 +232,123 @@ def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
                                                 "overwrite": True})
     check("plugin mode: Mixar's own level, but not the main level", ok and not data.get("main"), data)
     set_mode(project, "owned")
+
+
+SPINNER = "/Game/Mixar/Blueprints/BP_E2ESpinner"
+SPIN_DSL = """
+(event EventTick (DeltaSeconds)
+  (Transformation|AddActorWorldRotation :self self
+    :DeltaRotation (Math|Rotator|MakeRotator :Roll 0.0 :Pitch 0.0
+                     :Yaw (* DeltaSeconds (Variables|Default|GetSpeed)))
+    :bSweep false :bTeleport true))
+"""
+
+
+def playtest(mcp, toolset, steps) -> tuple[bool, dict]:
+    return call(mcp, toolset, "playtest", {"steps": json.dumps(steps)})
+
+
+def game_checks(mcp, toolset: str, packages: str) -> None:
+    """U3: a template game around the course package, played and won; a
+    Blueprint the agent writes, placed and running."""
+    course = os.path.join(packages, "UEQA_Course")
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": course, "folder": "UEQA_Course"})
+    check("import_package: the course", ok and len(data.get("objects") or []) == 11, data.get("objects"))
+    ok, data = call(mcp, toolset, "new_scene", {"name": "E2ECourse", "template": "third_person",
+                                                "player_position": [-6, 0, 1], "overwrite": True})
+    check("new_scene: third_person template", ok and data.get("game_mode") == "/Game/Mixar/Game/BP_MixarGameMode",
+          data)
+    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EBad", "template": "racing", "player_position": []})
+    check("new_scene: an unknown template is refused", not ok and "third_person" in data.get("error", ""), data)
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Course", "name": "", "position": [0, 0, 0],
+                                            "parent": "", "animation": ""})
+    check("place: the course", ok and data.get("actors") == 11, data)
+
+    ok, data = call(mcp, toolset, "play", {"scene": "current"})
+    check("play: the template game", ok and data.get("playing"), data)
+    ok, data = playtest(mcp, toolset, [{"wait": 0.5}, {"hold": "move_forward", "seconds": 0.5}, {"press": "jump"}])
+    steps = data.get("steps") or [{}, {}, {}]
+    start, moved = steps[0].get("state", {}), steps[1].get("state", {})
+    check("playtest: state from the GameMode", ok and start.get("total") == 3 and start.get("collected") == 0
+          and start.get("on_floor") is True, start)
+    check("playtest: hold moves the player (Enhanced Input)",
+          moved.get("player_position", [0])[0] > start.get("player_position", [0])[0] + 1.0,
+          [start.get("player_position"), moved.get("player_position")])
+    check("playtest: press jump leaves the floor", steps[2].get("state", {}).get("on_floor") is False,
+          steps[2].get("state"))
+    ok, data = playtest(mcp, toolset, [{"press": "fly"}])
+    check("playtest: an unknown action names the real ones",
+          "move_forward" in ((data.get("steps") or [{}])[0].get("error") or ""), data)
+    ok, data = playtest(mcp, toolset, [{"prove_loop": True}])
+    loop = (data.get("steps") or [{}])[0]
+    check("playtest: prove_loop wins (pickups, door, goal)", ok and loop.get("won") is True
+          and not loop.get("unreached") and data.get("final_state", {}).get("doors_open") is True, loop)
+    ok, data = playtest(mcp, toolset, [{"inspect": {"node": "Door", "properties": ["rotation", "position"]}}])
+    door = ((data.get("steps") or [{}])[0].get("values") or {})
+    check("playtest: inspect reads the opened door", abs(abs((door.get("rotation") or [0, 0, 0])[2]) - 90) < 1,
+          door)
+    ok, data = call(mcp, toolset, "stop", {})
+
+    ok, data = call(mcp, toolset, "blueprint", {"action": "docs", "path": "", "graph": "", "code": "", "name": "",
+                                                "type": "", "parent": "", "query": ""})
+    check("blueprint: docs", ok and "GRAMMAR" in data.get("docs", "") and "OnMixarEvent" in data.get("docs", ""))
+    bp = {"path": SPINNER, "graph": "", "code": "", "name": "", "type": "", "parent": "", "query": ""}
+    call(mcp, toolset, "remove_node", {"node": "Spinner"})
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "create", "parent": "Actor"})
+    if not ok and "exists" in data.get("error", ""):
+        ok = True
+    check("blueprint: create", ok, data)
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "add_variable", "name": "Speed", "type": "float"})
+    check("blueprint: add_variable", ok and "Speed" in (data.get("variables") or []), data)
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "find_nodes", "query": "AddActorWorldRotation"})
+    check("blueprint: find_nodes", ok and "Transformation|AddActorWorldRotation" in (data.get("type_ids") or []),
+          data)
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "write", "code": SPIN_DSL})
+    check("blueprint: write compiles", ok and data.get("compiled"), data)
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "write", "code": "(event EventTick (Nope|Nothing))"})
+    check("blueprint: a bad graph comes back as an error", not ok and data.get("error"), data)
+    call(mcp, toolset, "blueprint", {**bp, "action": "write", "code": SPIN_DSL})
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "read"})
+    check("blueprint: read", ok and "AddActorWorldRotation" in data.get("dsl", ""), data.get("dsl"))
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "create", "path": "/Game/Mixar/Game/BP_Mine"})
+    check("blueprint: the template game's folder is Mixar Link's", not ok, data)
+    ok, data = call(mcp, toolset, "blueprint", {**bp, "action": "create", "path": "/Game/ThirdPerson/BP_Mine"})
+    check("blueprint: writes stay under /Game/Mixar", not ok, data)
+
+    ok, data = call(mcp, toolset, "add_node", {"type": SPINNER, "name": "Spinner", "parent": "", "script": "",
+                                               "position": [0, 3, 1]})
+    check("add_node: the agent's Blueprint", ok and data.get("node") == "Spinner", data)
+    ok, data = call(mcp, toolset, "add_node", {"type": "Nonsense", "name": "X", "parent": "", "script": "",
+                                               "position": []})
+    check("add_node: an unknown class is refused", not ok, data)
+    ok, data = call(mcp, toolset, "set_property", {"node": "Spinner", "property": "Speed", "value": json.dumps(180)})
+    check("set_property: a Blueprint variable", ok, data)
+    ok, data = call(mcp, toolset, "set_property", {"node": "Spinner", "property": "position",
+                                                   "value": json.dumps([1, 3, 1])})
+    ok2, tree = call(mcp, toolset, "scene_tree", {"max_nodes": 500})
+    spinner = next((n for n in tree.get("nodes") or [] if n["path"] == "Spinner"), {})
+    check("set_property: position in the Blender frame", ok and spinner.get("position") == [1.0, 3.0, 1.0], spinner)
+    ok, data = call(mcp, toolset, "set_property", {"node": "Spinner", "property": "NoSuchThing",
+                                                   "value": json.dumps(1)})
+    check("set_property: an unknown property is refused", not ok, data)
+    call(mcp, toolset, "play", {"scene": "current"})
+    ok, data = playtest(mcp, toolset, [{"inspect": {"node": "Spinner", "properties": ["rotation"]}}, {"wait": 1},
+                                       {"inspect": {"node": "Spinner", "properties": ["rotation"]}}])
+    yaws = [((s.get("values") or {}).get("rotation") or [0, 0, 0])[2] for s in (data.get("steps") or [])[::2]]
+    check("the agent's Blueprint runs in the game", len(yaws) == 2 and abs(yaws[1] - yaws[0]) > 30, yaws)
+    call(mcp, toolset, "stop", {})
+
+    ok, data = call(mcp, toolset, "new_scene", {"name": "E2ETopDown", "template": "top_down", "set_main": False,
+                                                "player_position": [-6, 0, 1], "overwrite": True})
+    call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Course", "name": "", "position": [0, 0, 0],
+                                 "parent": "", "animation": ""})
+    call(mcp, toolset, "play", {"scene": "current"})
+    ok, data = playtest(mcp, toolset, [{"wait": 0.5}, {"hold": "move_forward", "seconds": 0.5}])
+    steps = data.get("steps") or [{}, {}]
+    a = steps[0].get("state", {}).get("player_position", [0, 0, 0])
+    b = steps[-1].get("state", {}).get("player_position", [0, 0, 0])
+    check("top_down: forward is north (Blender +Y)", b[1] > a[1] + 1.0 and abs(b[0] - a[0]) < 0.3, [a, b])
+    call(mcp, toolset, "stop", {})
 
 
 def main() -> int:
