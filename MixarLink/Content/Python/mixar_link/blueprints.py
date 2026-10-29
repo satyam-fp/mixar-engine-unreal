@@ -62,8 +62,9 @@ def _writable(path: str) -> str:
 
 
 def _load(path: str):
+    # unreal.load_asset: EditorAssetLibrary refuses while the game runs.
     path = path.split(".", 1)[0]
-    asset = unreal.EditorAssetLibrary.load_asset(path) if unreal.EditorAssetLibrary.does_asset_exist(path) else None
+    asset = unreal.load_asset(f"{path}.{path.rsplit('/', 1)[-1]}")
     return asset if isinstance(asset, unreal.Blueprint) else None
 
 
@@ -103,6 +104,8 @@ def blueprint(action: str, path: str, graph: str, code: str, name: str, type_nam
         reason = _writable(path)
         if reason:
             return {"error": reason}
+        if unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).is_in_play_in_editor():
+            return {"error": "The game is running; stop it before changing Blueprints."}
     try:
         if action == "create":
             cls = _parent(parent or "Actor")

@@ -14,6 +14,7 @@ physics from ``mixar_body``, and a rigged character can play a Mannequin clip
 
 import math
 import os
+import re
 
 import unreal
 
@@ -43,6 +44,11 @@ def level_path() -> str:
     if w is None:  # during Play In Editor the editor world reads as None; its level still knows
         current = _sub(unreal.LevelEditorSubsystem).get_current_level()
         w = current.get_outer() if current else None
+    if w is None:  # or only the game's copy of it does: /Game/Levels/UEDPIE_0_Name
+        game = _sub(unreal.UnrealEditorSubsystem).get_game_world()
+        if game is not None:
+            folder, name = game.get_path_name().split(".", 1)[0].rsplit("/", 1)
+            return f"{folder}/{re.sub(r'^UEDPIE_[0-9]+_', '', name)}"
     return w.get_path_name().split(".", 1)[0] if w else ""
 
 
