@@ -15,6 +15,8 @@ is the project's third-person GameMode (``/Game/ThirdPerson``), which brings
 the player character and its Enhanced Input set-up.
 """
 
+import re
+
 import unreal
 
 from . import ADAPTER_VERSION, MIXAR_FOLDER, game_spec
@@ -58,8 +60,12 @@ def _blueprint(bt, name: str, parent_class):
 
 
 def _apply(bt, bp, spec: dict) -> None:
-    """Variables (missing ones added), function graphs (replaced) and the
-    event graph (emptied, then written), compiled."""
+    """Variables and function parameters (missing ones added), function bodies
+    and events (rewritten: a write replaces the forms it names), compiled.
+
+    Graphs are never removed: a function graph removed and added again under
+    its old name comes back renamed (``Name_0``) and every call to it breaks.
+    """
     have = set(bt.list_variables(bp))
     for var in spec.get("variables", ()):
         if var[0] not in have:
@@ -72,25 +78,43 @@ def _apply(bt, bp, spec: dict) -> None:
     present = {g.get_name(): g for g in bt.list_graphs(bp)}
     graphs = {}
     for fname, params, outs, _ in spec.get("functions", ()):
-        if fname in present:
-            bt.remove_function_graph(bp, fname)
-        graph = bt.add_function_graph(bp, fname)
+        graph = present.get(fname)
+        if graph is None:  # a leftover of an older rebuild: Name_0 → Name
+            stray = next((g for n, g in present.items() if re.fullmatch(rf"{fname}_[0-9]+", n)), None)
+            if stray is not None:
+                unreal.BlueprintEditorLibrary.rename_graph(stray, fname)
+                graph = stray
+        if graph is None:
+            graph = bt.add_function_graph(bp, fname)
         graphs[fname] = graph
         for pname, ptype, is_object in params:
+            if bt._param_name_exists(graph, pname, True):
+                continue
             if is_object:
                 bt.add_object_function_param(graph, pname, unreal.load_class(None, ptype), True, None)
             else:
                 bt.add_function_param(graph, pname, ptype, True, None)
         for pname, ptype in outs:
-            bt.add_function_param(graph, pname, ptype, False, None)
+            if not bt._param_name_exists(graph, pname, False):
+                bt.add_function_param(graph, pname, ptype, False, None)
+    if graphs:  # calls between them resolve once the class knows them
+        bt.compile_blueprint(bp, False)
     for fname, _, _, dsl in spec.get("functions", ()):
         bt.write_graph_dsl(graphs[fname], dsl)
     if spec.get("events"):
-        event_graph = unreal.BlueprintEditorLibrary.find_event_graph(bp)
-        for node in bt.find_nodes(event_graph):
-            bt.delete_node(node)
-        bt.write_graph_dsl(event_graph, spec["events"])
+        bt.write_graph_dsl(unreal.BlueprintEditorLibrary.find_event_graph(bp), spec["events"])
     bt.compile_blueprint(bp, False)
+    _verify(bt, bp, spec)
+
+
+def _verify(bt, bp, spec: dict) -> None:
+    """Raise unless every function and event the spec names is in the graphs."""
+    names = {g.get_name() for g in bt.list_graphs(bp)}
+    missing = [f[0] for f in spec.get("functions", ()) if f[0] not in names]
+    events = bt.read_graph_dsl(unreal.BlueprintEditorLibrary.find_event_graph(bp)) if spec.get("events") else ""
+    missing += [e for e in re.findall(r"\(event (\w+)", spec.get("events", "")) if f"(event {e}" not in events]
+    if missing:
+        raise RuntimeError(f"{bp.get_name()} is missing {', '.join(missing)} after the build")
 
 
 def _container():

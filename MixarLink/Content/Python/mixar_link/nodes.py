@@ -55,6 +55,7 @@ def add_node(type_name: str, name: str, parent: str, position) -> dict:
                          f"TriggerBox, TextRenderActor, or a Blueprint under {MIXAR_FOLDER})."}
     if not name or not all(c.isalnum() or c in "_-" for c in name):
         return {"error": "name must be letters, digits, _ and -."}
+    parent = "" if parent == "." else parent  # "." is Godot's level root: no parent
     parent_actor = find(parent) if parent else None
     if parent and parent_actor is None:
         return {"error": f"No actor at {parent} (paths come from scene_tree)."}
