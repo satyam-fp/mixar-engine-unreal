@@ -88,9 +88,12 @@ VIEW_EYE = (-4.0, 10.0, -7.0)
 # the right palm, the barrel toward the left hand, the top up. Shared by the
 # bot and the player (each has a copy: a function per Blueprint).
 _GRIP_FN = """
-(fn MixarGrip (Body Gun Hand LeftHand)
+(fn MixarHold (Body Gun Hand LeftHand Forward)
+  ; the barrel along the aim, turned a little toward the supporting hand
   (bind hr (Transformation|GetSocketTransform :self Body :InSocketName Hand :TransformSpace "RTS_World"))
-  (bind barrel (- (Transformation|GetSocketLocation :self Body :InSocketName LeftHand) (.location hr)))
+  (bind support (Math|Vector|Normalize (- (Transformation|GetSocketLocation :self Body :InSocketName LeftHand)
+                                          (.location hr))))
+  (bind barrel (+ (* (Math|Vector|Normalize Forward) 3.0) support))
   (bind aim (Math|Rotator|MakeRotfromYZ :Y barrel :Z (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 1.0)))
   (bind palm (+ (.location hr) (* (Math|Vector|Normalize barrel) 5.0)))
   (bind held (Math|Transform|MakeTransform :Location palm :Rotation aim
@@ -101,7 +104,7 @@ _GRIP_FN = """
 """
 _GRIP_PARAMS = [("Body", "/Script/Engine.SkeletalMeshComponent", True),
                 ("Gun", "/Script/Engine.StaticMeshComponent", True), ("Hand", "name", False),
-                ("LeftHand", "name", False)]
+                ("LeftHand", "name", False), ("Forward", "Vector", False)]
 
 _INFO = (f'(Utilities|Casting|CastToBP_MixarGameInfo '
          f':Object (Actor|GetActorOfClass :ActorClass "{INFO_CLASS}"))')
@@ -144,7 +147,7 @@ def bot(assets: dict) -> dict:
             ("Clock", "float"), ("ThinkAt", "float"), ("ShotAt", "float"), ("ReactAt", "float"), ("Burst", "int"),
             ("HitUntil", "float"), ("StepAt", "float"), ("AnimState", "int"), ("Goal", "Vector"),
             ("HasGoal", "bool"), ("HandBone", "name"), ("HeadBone", "name"), ("Engaged", "bool"),
-            ("LeftHand", "name"), ("Calibrated", "bool"),
+            ("LeftHand", "name"), ("Calibrated", "bool"), ("Frames", "int"),
         ],
         "object_variables": [("Target", ACTOR, None), ("Anims", ANIM, "ARRAY")],
         "components": [("Gun", "StaticMeshComponent")],
@@ -158,7 +161,11 @@ def bot(assets: dict) -> dict:
   (Variables|Default|SetDead false)
   (Variables|Default|SetBurst 3)
   (Variables|Default|SetAnimState -1)
+  ; shots and sight lines are Visibility traces: the body stops them (a Pawn ignores the channel)
+  (Collision|SetCollisionResponsetoChannel :self (Variables|Character|GetCapsuleComponent)
+    :Channel "ECC_Visibility" :NewResponse "ECR_Block")
   (Variables|Default|SetCalibrated false)
+  (Variables|Default|SetFrames 0)
   (Rendering|SetVisibility :self (Variables|Default|GetGun) :bNewVisibility false :bPropagateToChildren false)
   (bind body (Variables|Character|GetMesh))
   (bind gun (Variables|Default|GetGun))
@@ -226,7 +233,7 @@ def bot(assets: dict) -> dict:
       (Class|BPMixarShooterGameMode|MixarKilled :self gm :Victim self :Killer From :Headshot Headshot))
     (:CastFailed)))
 """),
-            ("MixarGrip", _GRIP_PARAMS, [], _GRIP_FN),
+            ("MixarHold", _GRIP_PARAMS, [], _GRIP_FN),
             ("MixarStopAI", [], [], """
 (fn MixarStopAI ()
   (bind ai (Utilities|Casting|CastToAIController :Object (Pawn|GetController :self self))
@@ -239,14 +246,17 @@ def bot(assets: dict) -> dict:
   (bind target (Variables|Default|GetTarget))
   (bind gun (Variables|Default|GetGun))
   (bind eye (+ (Transformation|GetActorLocation :self self) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 60.0)))
-  (bind aimz (select (< (Math|Random|RandomFloat) 0.3) 68.0 35.0))
+  (bind aimz (select (< (Math|Random|RandomFloat) 0.2) 72.0 30.0))
   (bind aim (+ (Transformation|GetActorLocation :self target) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z aimz)))
+  ; spread like a rifle sprayed by a person: a first shot is accurate, the burst and moving widen it
+  (bind moving (> (Math|Vector|VectorLengthXY (Transformation|GetVelocity :self self)) 60.0))
+  (bind cone (+ (+ 1.2 (select moving 3.5 0.0)) (* (- 5 (Math|Integer|Min(Integer) (Variables|Default|GetBurst) 5)) 0.7)))
   (bind dir (Math|Random|RandomUnitVectorinConeinDegrees :ConeDir (Math|Vector|Normalize (- aim eye))
-                                                          :ConeHalfAngleInDegrees 1.8))
+                                                          :ConeHalfAngleInDegrees cone))
   (bind muzzle (+ (Transformation|GetWorldLocation :self gun) (* (Transformation|GetRightVector :self gun) 55.0)))
   {_sound3d(assets, "S_MixarGunshot", "muzzle", 0.9)}
   {_fx(assets, "NS_MixarFlash", "muzzle", 0.045)}
-  (bind (hit didHit) (Collision|LineTraceByChannel :Start eye :End (+ eye (* dir 8000.0))
+  (bind (hit didHit) (Collision|LineTraceByChannel :Start (+ eye (* dir 60.0)) :End (+ eye (* dir 8000.0))
                         :TraceChannel "Visibility" :bTraceComplex false :bIgnoreSelf true :DrawDebugType "None"))
   (if didHit
     (bind (blocking initial time dist loc impact normal inormal mat actor comp hitbone bone item elem face start end)
@@ -254,7 +264,7 @@ def bot(assets: dict) -> dict:
     (bind gm {_GM}
       (:then
         (if (Class|BPMixarShooterGameMode|MixarIsCombatant :self gm :Who actor)
-          (bind head (> (.z impact) (+ (.z (Transformation|GetActorLocation :self actor)) 52.0)))
+          (bind head (> (.z impact) (+ (.z (Transformation|GetActorLocation :self actor)) 65.0)))
           {_fx(assets, "NS_MixarBlood", "impact", 0.12)}
           (Class|BPMixarShooterGameMode|MixarDamage :self gm :Victim actor :Amount 27.0 :Headshot head :From self)
           (else
@@ -309,10 +319,14 @@ def bot(assets: dict) -> dict:
         "events": """
 (event EventTick (DeltaSeconds)
   (Variables|Default|SetClock (+ (Variables|Default|GetClock) DeltaSeconds))
-  (if (and (not (Variables|Default|GetCalibrated)) (> (Variables|Default|GetClock) 0.3))
+  ; measured once the aim pose has played a few frames (at spawn the hands are at rest)
+  (Variables|Default|SetFrames (+ (Variables|Default|GetFrames) 1))
+  ; re-measured every frame: the hand turns between clips, the rifle keeps pointing where the bot faces
+  (if (and (> (Variables|Default|GetClock) 0.4) (> (Variables|Default|GetFrames) 5))
     (Variables|Default|SetCalibrated true)
-    (CallFunction|MixarGrip :Body (Variables|Character|GetMesh) :Gun (Variables|Default|GetGun)
-      :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand)))
+    (CallFunction|MixarHold :Body (Variables|Character|GetMesh) :Gun (Variables|Default|GetGun)
+      :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand)
+      :Forward (Transformation|GetActorForwardVector :self self)))
   (if (not (Variables|Default|GetDead))
     (if (> (Variables|Default|GetClock) (Variables|Default|GetThinkAt))
       (Variables|Default|SetThinkAt (+ (Variables|Default|GetClock) 0.2))
@@ -349,7 +363,7 @@ def player(assets: dict) -> dict:
             ("LastFireAt", "float"), ("Clock", "float"), ("AnimState", "int"), ("StepAt", "float"),
             ("ViewKick", "float"), ("ViewBase", "Vector"), ("Spread", "float"),
             ("HandBone", "name"), ("LeftHand", "name"), ("HeadBone", "name"), ("Calibrated", "bool"),
-            ("ViewEye", "Vector"),
+            ("ViewEye", "Vector"), ("Frames", "int"), ("Moving", "int"), ("Delta", "float"),
         ],
         "editable": True,
         "object_variables": [("Anims", ANIM, "ARRAY")],
@@ -358,6 +372,8 @@ def player(assets: dict) -> dict:
         "functions": [
             ("MixarSetupFP", [], [], f"""
 (fn MixarSetupFP ()
+  (Collision|SetCollisionResponsetoChannel :self (Variables|Character|GetCapsuleComponent)
+    :Channel "ECC_Visibility" :NewResponse "ECR_Block")
   (CallFunction|MixarArm :Length 0.0)
   (CallFunction|MixarCam)
   (Variables|Pawn|SetUseControllerRotationYaw true)
@@ -376,6 +392,7 @@ def player(assets: dict) -> dict:
   (Rendering|SetVisibility :self gun1 :bNewVisibility false :bPropagateToChildren false)
   (Rendering|SetVisibility :self gun3 :bNewVisibility false :bPropagateToChildren false)
   (Variables|Default|SetCalibrated false)
+  (Variables|Default|SetFrames 0)
   (Variables|Default|SetClock 0.0)
   (Variables|Default|SetAnimState -1)
   (bind info {_INFO}
@@ -402,18 +419,19 @@ def player(assets: dict) -> dict:
         :LocationRule "SnapToTarget" :RotationRule "SnapToTarget" :ScaleRule "KeepWorld" :bWeldSimulatedBodies false))
     (:CastFailed)))
 """),
-            ("MixarGrip", _GRIP_PARAMS, [], _GRIP_FN),
+            ("MixarHold", _GRIP_PARAMS, [], _GRIP_FN),
             ("MixarCalibrate", [], [], """
 (fn MixarCalibrate ()
   ; the rifle into both view and body hands, then the view model so the eyes
   ; sit at ViewEye from the camera (the rifle lower right)
   (bind view (Variables|Default|GetView))
-  (CallFunction|MixarGrip :Body view :Gun (Variables|Default|GetGun1P) :Hand (Variables|Default|GetHandBone)
-    :LeftHand (Variables|Default|GetLeftHand))
-  (CallFunction|MixarGrip :Body (Variables|Character|GetMesh) :Gun (Variables|Default|GetGun3P)
-    :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand))
   ; the camera component itself (the camera manager can still be at the origin)
   (bind (where turn) (CallFunction|MixarCameraPose))
+  (CallFunction|MixarHold :Body view :Gun (Variables|Default|GetGun1P) :Hand (Variables|Default|GetHandBone)
+    :LeftHand (Variables|Default|GetLeftHand) :Forward (Math|Vector|GetForwardVector turn))
+  (CallFunction|MixarHold :Body (Variables|Character|GetMesh) :Gun (Variables|Default|GetGun3P)
+    :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand)
+    :Forward (Transformation|GetActorForwardVector :self self))
   (bind eyes (Transformation|GetSocketLocation :self view :InSocketName (Variables|Default|GetHeadBone)))
   (bind want (+ where (Math|Vector|RotateVector :A (Variables|Default|GetViewEye) :B turn)))
   (Variables|Default|SetViewBase (+ (Variables|Default|GetViewBase) (Math|Vector|UnrotateVector :A (- want eyes) :B turn))))
@@ -507,8 +525,9 @@ def player(assets: dict) -> dict:
             ("MixarShoot", [], [], f"""
 (fn MixarShoot ()
   (Variables|Default|SetAmmo (- (Variables|Default|GetAmmo) 1))
+  ; the next shot 0.1 s on, counted from the shot due this frame (at most one frame back)
   (Variables|Default|SetShotAt (+ (Math|Float|Max(Float) (Variables|Default|GetShotAt)
-                                                       (- (Variables|Default|GetClock) 0.1)) 0.1))
+                                    (- (Variables|Default|GetClock) (Variables|Default|GetDelta))) 0.1))
   (Variables|Default|SetLastFireAt (Variables|Default|GetClock))
   (Variables|Default|SetSpray (+ (Variables|Default|GetSpray) 1))
   (Variables|Default|SetViewKick 1.0)
@@ -529,7 +548,7 @@ def player(assets: dict) -> dict:
     (bind gm {_GM}
       (:then
         (if (Class|BPMixarShooterGameMode|MixarIsCombatant :self gm :Who actor)
-          (bind head (> (.z impact) (+ (.z (Transformation|GetActorLocation :self actor)) 52.0)))
+          (bind head (> (.z impact) (+ (.z (Transformation|GetActorLocation :self actor)) 65.0)))
           {_fx(assets, "NS_MixarBlood", "impact", 0.12)}
           (Class|BPMixarShooterGameMode|MixarDamage :self gm :Victim actor :Amount 27.0 :Headshot head :From self)
           (else
@@ -561,9 +580,19 @@ def player(assets: dict) -> dict:
 (event EventTick (DeltaSeconds)
   (bind clock (+ (Variables|Default|GetClock) DeltaSeconds))
   (Variables|Default|SetClock clock)
-  (if (and (not (Variables|Default|GetCalibrated)) (> clock 0.35))
+  (Variables|Default|SetDelta DeltaSeconds)
+  (Variables|Default|SetFrames (+ (Variables|Default|GetFrames) 1))
+  (if (and (not (Variables|Default|GetCalibrated)) (and (> clock 0.4) (> (Variables|Default|GetFrames) 5)))
     (Variables|Default|SetCalibrated true)
     (CallFunction|MixarCalibrate))
+  (if (Variables|Default|GetCalibrated)
+    (bind (where turn) (CallFunction|MixarCameraPose))
+    (CallFunction|MixarHold :Body (Variables|Default|GetView) :Gun (Variables|Default|GetGun1P)
+      :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand)
+      :Forward (Math|Vector|GetForwardVector turn))
+    (CallFunction|MixarHold :Body (Variables|Character|GetMesh) :Gun (Variables|Default|GetGun3P)
+      :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand)
+      :Forward (Transformation|GetActorForwardVector :self self)))
   (if (not (Variables|Default|GetDead))
     (bind pc (Game|GetPlayerController :PlayerIndex 0))
     (bind fire (or (Variables|Default|GetFireHeld) (Game|Player|IsInputKeyDown :self pc :Key "LeftMouseButton")))
@@ -581,9 +610,11 @@ def player(assets: dict) -> dict:
     (Variables|Default|SetSpread (+ (+ 0.2 (* (Math|Integer|Min(Integer) (Variables|Default|GetSpray) 10) 0.12))
                                     (select airborne 6.0 (select (> speed 250.0) 2.5 (select (> speed 60.0) 0.8 0.0)))))
     (if (and (Variables|Default|GetReloading) (>= clock (Variables|Default|GetReloadUntil)))
-      (bind move (Math|Integer|Min(Integer) (- 30 (Variables|Default|GetAmmo)) (Variables|Default|GetReserve)))
-      (Variables|Default|SetAmmo (+ (Variables|Default|GetAmmo) move))
-      (Variables|Default|SetReserve (- (Variables|Default|GetReserve) move))
+      ; kept in a variable: a bound expression is re-read at each use, after SetAmmo it would be 0
+      (Variables|Default|SetMoving (Math|Integer|Min(Integer) (- 30 (Variables|Default|GetAmmo))
+                                                             (Variables|Default|GetReserve)))
+      (Variables|Default|SetAmmo (+ (Variables|Default|GetAmmo) (Variables|Default|GetMoving)))
+      (Variables|Default|SetReserve (- (Variables|Default|GetReserve) (Variables|Default|GetMoving)))
       (Variables|Default|SetReloading false)
       (Variables|Default|SetAnimState -1))
     (if (and (not (Variables|Default|GetReloading))
@@ -634,7 +665,7 @@ def game_mode(assets: dict) -> dict:
         "parent": f"{FOLDER}/BP_MixarGameMode.BP_MixarGameMode_C",
         "variables": [
             ("ScoreCT", "int"), ("ScoreT", "int"), ("RoundNo", "int"), ("RoundLeft", "float"), ("RoundOver", "bool"),
-            ("NextRoundAt", "float"), ("Kills", "int"), ("Banner", "string"), ("BannerUntil", "float"),
+            ("NextRoundAt", "float"), ("Kills", "int"), ("Banner", "string"), ("BannerUntil", "float"), ("FreezeUntil", "float"),
             ("Feed", "string", "ARRAY"), ("FeedAt", "float", "ARRAY"), ("MatchOver", "bool"),
             ("LastHitAt", "float"), ("LastHeadshotAt", "float"), ("AliveCT", "int"), ("AliveT", "int"),
             ("ReportAt", "float"), ("Range", "float"), ("HasBest", "bool"), ("Tally", "int"),
@@ -680,8 +711,12 @@ def game_mode(assets: dict) -> dict:
                 (not (Utilities|String|EqualExactly(String) (CallFunction|MixarTeamOf :Who Who) Team))))
     (bind there (+ (Transformation|GetActorLocation :self Who) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 40.0)))
     (bind dist (Math|Vector|Distance(Vector) Eye there))
-    (if (< dist (Variables|Default|GetRange))
-      (bind (hit didHit) (Collision|LineTraceByChannel :Start Eye :End there :TraceChannel "Visibility"
+    (bind facing (Math|Vector|DotProduct (Transformation|GetActorForwardVector :self Seeker)
+                                         (Math|Vector|Normalize (- there Eye))))
+    ; seen when in front (a field of view near 150 degrees) or close enough to hear
+    (if (and (< dist (Variables|Default|GetRange)) (or (> facing 0.25) (< dist 700.0)))
+      ; from just outside the seeker's capsule (it blocks Visibility; this trace is the GameMode's, not its own)
+      (bind (hit didHit) (Collision|LineTraceByChannel :Start (+ Eye (* (Math|Vector|Normalize (- there Eye)) 60.0)) :End there :TraceChannel "Visibility"
                             :bTraceComplex false :bIgnoreSelf true :DrawDebugType "None"))
       (bind (blocking initial time d loc impact normal inormal mat actor comp hitbone bone item elem face s e)
             (Collision|BreakHitResult hit))
@@ -693,6 +728,8 @@ def game_mode(assets: dict) -> dict:
             ("MixarFindTarget", [("Seeker", ACTOR, True), ("Team", "string", False)],
              [("Found", ACTOR), ("Any", "bool")], """
 (fn MixarFindTarget (Seeker Team)
+  (if (< (Variables|Default|GetClock) (Variables|Default|GetFreezeUntil))
+    (return Seeker false))
   (bind eye (+ (Transformation|GetActorLocation :self Seeker) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 60.0)))
   (Variables|Default|SetRange 4500.0)
   (Variables|Default|SetHasBest false)
@@ -800,6 +837,8 @@ def game_mode(assets: dict) -> dict:
   (Variables|Default|SetBanner (Utilities|String|Append "Round " (Utilities|String|ToString(Integer)
                                                                    (Variables|Default|GetRoundNo))))
   (Variables|Default|SetBannerUntil (+ (Variables|Default|GetClock) 2.0))
+  ; freeze time, as in CS: the teams hold their spawns while the round starts
+  (Variables|Default|SetFreezeUntil (+ (Variables|Default|GetClock) 3.0))
   {_sound2d(assets, "S_MixarRoundstart", 0.6)}
   (bind info (Utilities|Casting|CastToBP_MixarGameInfo :Object (Variables|Default|GetInfo))
     (:then

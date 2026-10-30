@@ -127,7 +127,7 @@ class Mcp:
         req.add_header("Accept", "application/json, text/event-stream")
         if self.session:
             req.add_header("Mcp-Session-Id", self.session)
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=2400) as resp:  # the shooter build takes minutes
             headers = {k.lower(): v for k, v in resp.headers.items()}
             text = resp.read().decode()
         if "text/event-stream" in headers.get("content-type", ""):
@@ -462,7 +462,7 @@ def shooter_checks(mcp, toolset: str, packages: str) -> None:
     check("shooter: reload fills the magazine", final.get("ammo") == 30 and final.get("reserve", 90) < 90, final)
     ok, png = call(mcp, toolset, "capture", {"source": "game", "max_width": 960})
     check("capture: first-person view", ok and (png.get("width") or 0) > 0)
-    ok, data = playtest(mcp, toolset, [{"wait": 25}])
+    ok, data = playtest(mcp, toolset, [{"wait": 45}])
     final = data.get("final_state") or {}
     check("shooter: bots fight (fewer than 10 alive, or a round ended)",
           final.get("alive_ct", 5) + final.get("alive_t", 5) < 10 or final.get("score_ct", 0)

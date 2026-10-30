@@ -15,7 +15,7 @@ Both stay in the level as hidden stand-ins (tag ``mixar_shooter_standin``).
 The grip is measured, not guessed, by the game itself a moment after a
 character spawns: in its live aiming pose the barrel runs from the right hand
 (on the grip) toward the left hand (on the handguard), level with the world's
-up (``MixarGrip``). The weapon package's convention makes that exact: its
+up (``MixarHold``). The weapon package's convention makes that exact: its
 origin is the pistol grip where the right hand closes, its barrel points to
 Blender -Y (the same front a character faces) and its top is up. The view
 model is placed the same way: its eyes go to ``ViewEye`` from the camera (a

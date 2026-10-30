@@ -176,6 +176,11 @@ def set_property(node: str, prop: str, value_json: str) -> dict:
         value = json.loads(value_json) if value_json else None
     except ValueError:
         value = value_json
+    if isinstance(value, str) and value.strip()[:1] in ("[", "{"):
+        try:  # encoded twice on the way (a client that JSON-encodes the already-encoded value)
+            value = json.loads(value)
+        except ValueError:
+            pass
     obj, name = actor, prop
     with unreal.ScopedEditorTransaction(f"Mixar: set {node} {prop}"):
         actor.modify()

@@ -28,20 +28,26 @@ ATTENUATION = "SA_MixarWorld"
 LOOPING = {"S_MixarWind", "S_MixarMusic"}
 TEMPLATES = "/Niagara/DefaultAssets/Templates/Systems"
 NIAGARA = "NiagaraToolsets.NiagaraToolset_System"
-# name: (template system, colour (HDR linear), emitters to tint)
+# name: (template system, colour (HDR linear), emitters to tint, emitters to
+# remove, {(emitter, InitializeParticle input): float}). The template systems
+# are sized in world units (a spawn's Scale does not shrink their sprites), so
+# sizes and lifetimes are set here.
+_RIBBONS = ("RibbonTrailFollower", "Ribbon_Trail_Leader")
+_BURST = "OmnidirectionalBurst"
+
+
+def _sized(size, life):
+    return {(_BURST, "Uniform Sprite Size Min"): size[0], (_BURST, "Uniform Sprite Size Max"): size[1],
+            (_BURST, "Lifetime Min"): life[0], (_BURST, "Lifetime Max"): life[1]}
+
+
 EFFECTS = {
-    "NS_MixarPickup": ("RadialBurst", (8.0, 4.6, 0.9), ("OmnidirectionalBurst", "Ribbon_Trail_Leader",
-                                                        "RibbonTrailFollower")),
-    "NS_MixarHurt": ("SimpleExplosion", (6.0, 0.5, 0.25), ("OmnidirectionalBurst", "SimpleSpriteBurst",
-                                                            "UpwardMeshBurst")),
-    "NS_MixarWin": ("RadialBurst", (10.0, 7.0, 3.0), ("OmnidirectionalBurst", "Ribbon_Trail_Leader",
-                                                       "RibbonTrailFollower")),
-    "NS_MixarFlash": ("SimpleExplosion", (16.0, 8.0, 2.5), ("OmnidirectionalBurst", "SimpleSpriteBurst",
-                                                          "UpwardMeshBurst")),
-    "NS_MixarSparks": ("RadialBurst", (9.0, 6.0, 3.0), ("OmnidirectionalBurst", "Ribbon_Trail_Leader",
-                                                         "RibbonTrailFollower")),
-    "NS_MixarBlood": ("SimpleExplosion", (0.35, 0.0, 0.0), ("OmnidirectionalBurst", "SimpleSpriteBurst",
-                                                             "UpwardMeshBurst")),
+    "NS_MixarPickup": ("RadialBurst", (8.0, 4.6, 0.9), (_BURST,) + _RIBBONS, (), _sized((2.0, 6.0), (0.5, 1.2))),
+    "NS_MixarHurt": ("RadialBurst", (6.0, 0.4, 0.2), (_BURST,), _RIBBONS, _sized((4.0, 10.0), (0.25, 0.5))),
+    "NS_MixarWin": ("RadialBurst", (10.0, 7.0, 3.0), (_BURST,) + _RIBBONS, (), _sized((3.0, 8.0), (1.0, 2.0))),
+    "NS_MixarFlash": ("RadialBurst", (18.0, 9.0, 2.5), (_BURST,), _RIBBONS, _sized((5.0, 12.0), (0.03, 0.06))),
+    "NS_MixarSparks": ("RadialBurst", (9.0, 6.0, 3.0), (_BURST,), _RIBBONS, _sized((1.0, 2.5), (0.12, 0.3))),
+    "NS_MixarBlood": ("RadialBurst", (0.35, 0.01, 0.01), (_BURST,), _RIBBONS, _sized((3.0, 7.0), (0.2, 0.4))),
 }
 
 
@@ -93,29 +99,37 @@ def _epic(toolset: str, tool: str, args: dict):
     return json.loads(result.value) if result.value else None
 
 
+def _input(system: str, emitter: str, name: str, struct: str, value: dict) -> None:
+    _epic(NIAGARA, "SetStackInputData", {
+        "stackInputRef": {"system": {"refPath": system}, "emitterName": emitter, "scriptName": "ParticleSpawnScript",
+                          "moduleName": "InitializeParticle", "rendererIndex": -1, "inputNameStack": [name]},
+        "inputData": {"struct": {"refPath": struct}, "value": value}})
+
+
 def _effects() -> dict:
     found = {}
-    for name, (template, colour, emitters) in EFFECTS.items():
-        path = f"{FX}/{name}"
+    for name, (template, colour, tinted, removed, floats) in EFFECTS.items():
+        path, system = f"{FX}/{name}", _path(FX, name)
         try:
-            if not unreal.EditorAssetLibrary.does_asset_exist(path):
-                _epic(NIAGARA, "CreateNiagaraSystem", {
-                    "assetName": name, "assetPath": FX,
-                    "templateSystem": {"refPath": _path(TEMPLATES, template)}})
+            if unreal.EditorAssetLibrary.does_asset_exist(path):  # remade: its settings may have changed
+                unreal.EditorAssetLibrary.delete_asset(path)
+            _epic(NIAGARA, "CreateNiagaraSystem", {
+                "assetName": name, "assetPath": FX, "templateSystem": {"refPath": _path(TEMPLATES, template)}})
+            for emitter in removed:
+                _epic(NIAGARA, "RemoveEmitter", {"emitterToRemove": {
+                    "system": {"refPath": system}, "emitterName": emitter, "scriptName": "", "moduleName": "",
+                    "rendererIndex": -1, "inputNameStack": []}})
             r, g, b = colour
-            for emitter in emitters:
-                _epic(NIAGARA, "SetStackInputData", {
-                    "stackInputRef": {"system": {"refPath": _path(FX, name)}, "emitterName": emitter,
-                                      "scriptName": "ParticleSpawnScript", "moduleName": "InitializeParticle",
-                                      "rendererIndex": -1, "inputNameStack": ["Color"]},
-                    "inputData": {"struct": {"refPath": "/Script/CoreUObject.LinearColor"},
-                                  "value": {"r": r, "g": g, "b": b, "a": 1.0}}})
+            for emitter in tinted:
+                _input(system, emitter, "Color", "/Script/CoreUObject.LinearColor", {"r": r, "g": g, "b": b, "a": 1.0})
+            for (emitter, key), value in floats.items():
+                _input(system, emitter, key, "/Script/Niagara.NiagaraFloat", {"value": float(value)})
             unreal.EditorAssetLibrary.save_asset(path, False)
         except Exception as exc:  # noqa: BLE001 - the game plays without the effect
             unreal.log_warning(f"[Mixar Link] the effect {name} was not made: {exc}")
             continue
         if unreal.EditorAssetLibrary.does_asset_exist(path):
-            found[name] = _path(FX, name)
+            found[name] = system
     return found
 
 

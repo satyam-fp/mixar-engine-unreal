@@ -364,10 +364,13 @@ class _Run:
         if not isinstance(spec, dict) or not spec.get("node"):
             return {"error": "inspect needs {node, properties}"}
         name = str(spec["node"])
-        actor = next((a for a in unreal.GameplayStatics.get_all_actors_of_class(self.world, unreal.Actor)
-                      if a.get_actor_label() == name or _path(a) == name), None)
+        actors = list(unreal.GameplayStatics.get_all_actors_of_class(self.world, unreal.Actor))
+        actor = next((a for a in actors if name in (a.get_actor_label(), _path(a), a.get_name())), None)
         if actor is None:
-            return {"error": f"no actor '{name}' in the running game"}
+            # spawned actors have runtime names: name the ones of a matching class
+            like = [a.get_name() for a in actors if name.lower().rstrip("_0123456789") in
+                    a.get_class().get_name().lower()][:20]
+            return {"error": f"no actor '{name}' in the running game", "similar": like}
         values, blender = {}, []
         for key in spec.get("properties") or ["position"]:
             key = str(key)

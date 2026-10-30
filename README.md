@@ -93,7 +93,41 @@ written with Epic's Blueprint graph DSL from `mixar_link/game_spec.py`:
 - `BP_MixarGameMode_TopDown` (camera above, W = north) and
   `BP_MixarGameMode_Platformer` (side view from Blender −Y, the player keeps
   its lane) change only the camera and movement;
-- `BP_MixarHUD` draws the collected count and the win / lose banner.
+- `BP_MixarHUD` draws the level's title card (its `GameInfo` actor: Title,
+  Objective, Music, Ambience), the collected count, a timer, a hit flash and an
+  end screen. The game plays synthesised sounds (`Resources/Sounds`,
+  `scripts/make_sounds.py`), wind and music, and Niagara bursts for pickups,
+  hits and the win; an `enemy` without a pivot chases the player; a
+  `mixar_role=player` humanoid replaces the Mannequin (idle / run / fall clips
+  retargeted onto it). `new_scene` takes `look` (day, sunset, dawn, night,
+  overcast), `floating` (ground and clouds below the level), `title`,
+  `objective`.
+
+`template="shooter"` (0.5) is a round-based first-person tactical shooter,
+from `mixar_link/shooter_spec.py`:
+
+- `BP_MixarShooterGameMode` (a child of `BP_MixarGameMode`): CT and T spawn on
+  `spawn` markers tagged `mixar_team` `ct` / `t`; rounds end by elimination or
+  time (CT), first to `RoundsToWin` (GameInfo; also `BotsPerTeam`,
+  `RoundSeconds`); a kill feed;
+- `BP_MixarShooterPlayer` (child of the third-person character): first person
+  with a view model (the player character's own mesh, head and legs hidden,
+  attached to the camera), fire / reload / walk / crouch on the mouse and
+  R / Shift / Ctrl, recoil climb with partial recovery, spray and movement
+  spread, 30 / 90 ammo, armor, a death camera;
+- `BP_MixarBot`: Characters on the navigation mesh that move toward the enemy
+  spawn or mid, turn on the nearest enemy in sight, react, fire bursts with
+  spread, die with a death clip;
+- `BP_MixarShooterHUD`: crosshair, hit marker, health / armor, ammo, score,
+  round timer, alive counts, kill feed, banners.
+
+Placed packages give the game its art: a rigged humanoid `player` / `ally` /
+`enemy` becomes its team's model (the Mannequin rifle set retargeted onto
+it, root locked), a `weapon` mesh (origin on the grip, barrel toward Blender
+−Y) the rifle everyone holds; both stay as hidden stand-ins. The rifle's hold
+is measured from the live pose each frame (right hand on the grip, barrel
+along the aim), and the view model is placed from the camera so the eyes sit
+at GameInfo `ViewEye`.
 
 They are ordinary Blueprints in the project, so a packaged game carries them.
 Other Blueprints talk to the rules through the GameMode's
