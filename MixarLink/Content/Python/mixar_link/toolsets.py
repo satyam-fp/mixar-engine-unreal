@@ -66,6 +66,16 @@ def _sub(cls):
     return unreal.get_editor_subsystem(cls)
 
 
+PLAYING = ("The game is running: Unreal saves and compiles assets only in the editor. Stop it first "
+           "(engine_play action=stop), then call this again.")
+
+
+def _while_playing() -> str:
+    """Why an asset-changing call must wait for the game to stop, else ""."""
+    from . import play
+    return PLAYING if play.playing() else ""
+
+
 def _async(start):
     """An async tool's result; a failure while starting it is the answer, not
     a broken call."""
@@ -181,7 +191,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             JSON: {"ok", "data": {folder, main_scene, objects, meshes, collision,
             issues, animations?, retarget?, mannequin_clips?}}.
         """
-        return _reply(package.import_package(source_dir, folder))
+        return _err(_while_playing()) if _while_playing() else _reply(package.import_package(source_dir, folder))
 
     @toolset_registry.tool_call
     @staticmethod
@@ -217,6 +227,8 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             return _err("name must be letters, digits and _ (at most 64).")
         if look and look not in level.LOOKS:
             return _err(f"look must be one of {', '.join(level.LOOKS)}.")
+        if _while_playing():
+            return _err(_while_playing())
         return _reply(level.new_scene(name, set_main, with_defaults, overwrite, ground,
                                       list(player_position) if player_position else None, template or "",
                                       look or "", bool(floating), title or "", objective or ""))
@@ -232,7 +244,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
         Returns:
             JSON: {"ok", "data": {scene}}.
         """
-        return _reply(level.open_scene(scene))
+        return _err(_while_playing()) if _while_playing() else _reply(level.open_scene(scene))
 
     @toolset_registry.tool_call
     @staticmethod
@@ -342,6 +354,8 @@ class MixarLinkTools(unreal.ToolsetDefinition):
         Returns:
             JSON: {"ok", "data": {...}}.
         """
+        if action not in ("docs", "read", "find_nodes", "node_pins") and _while_playing():
+            return _err(_while_playing())
         return _reply(blueprints.blueprint(action, path, graph, code, name, type, parent, query, bool(output)))
 
     @toolset_registry.tool_call
@@ -353,7 +367,7 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             steps: JSON list of steps: {hold, seconds} | {press} | {wait} |
                 {walk_to: [x, y, z] Blender frame, timeout} | {prove_loop: true, timeout}
                 | {inspect: {node, properties}} | {state: true}; shooter: {fire: seconds}
-                | {reload: true} | {aim_at: [x, y, z]}.
+                | {reload: true} | {aim_at: [x, y, z]} | {god: bool} (the player takes no damage).
 
         Returns:
             JSON: {"ok", "data": {steps, final_state}}.

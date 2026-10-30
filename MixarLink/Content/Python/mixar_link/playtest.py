@@ -156,6 +156,8 @@ class _Run:
                                                      else 0.1, 0.05, 10.0))
             elif "reload" in step:
                 result = self.flag("ReloadHeld")
+            elif "god" in step:
+                result = self.flag("God", bool(step["god"]))
             elif "aim_at" in step:
                 result = self.aim_at(step["aim_at"])
             elif "inspect" in step:
@@ -278,19 +280,22 @@ class _Run:
         player = self._shooter()
         if player is None:
             return {"error": "fire needs a shooter level (new_scene template=shooter)"}
-        before = player.get_editor_property("Ammo")
+        before, clock = player.get_editor_property("Ammo"), player.get_editor_property("Clock")
         player.set_editor_property("FireHeld", True)
         yield from _sleep(seconds)
-        if unreal.SystemLibrary.is_valid(player):
-            player.set_editor_property("FireHeld", False)
+        if not unreal.SystemLibrary.is_valid(player):
+            return {"shots": 0}
+        player.set_editor_property("FireHeld", False)
+        # game time the trigger was down (a slow editor frame makes it longer than asked)
+        held = player.get_editor_property("Clock") - clock
         yield
-        return {"shots": before - player.get_editor_property("Ammo") if unreal.SystemLibrary.is_valid(player) else 0}
+        return {"shots": before - player.get_editor_property("Ammo"), "game_seconds": round(held, 2)}
 
-    def flag(self, name: str) -> dict:
+    def flag(self, name: str, value: bool = True) -> dict:
         player = self._shooter()
         if player is None:
-            return {"error": "reload needs a shooter level (new_scene template=shooter)"}
-        player.set_editor_property(name, True)
+            return {"error": f"{name} needs a shooter level (new_scene template=shooter)"}
+        player.set_editor_property(name, value)
         return {}
 
     def aim_at(self, point) -> dict:

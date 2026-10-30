@@ -82,7 +82,7 @@ INFO_DEFAULTS = {"RoundsToWin": 5, "BotsPerTeam": 5, "RoundSeconds": 115.0, "Pla
 # Where the first-person eyes sit relative to the camera (camera space, cm:
 # X forward, Y right, Z up), so the rifle shows lower right; the level's
 # GameInfo ViewEye overrides it (game.py sets it on the CDO).
-VIEW_EYE = (-4.0, 10.0, -7.0)
+VIEW_EYE = (3.0, 14.0, -12.0)
 
 # The rifle in a character's hands, measured from the live pose: the grip in
 # the right palm, the barrel toward the left hand, the top up. Shared by the
@@ -147,7 +147,7 @@ def bot(assets: dict) -> dict:
             ("Clock", "float"), ("ThinkAt", "float"), ("ShotAt", "float"), ("ReactAt", "float"), ("Burst", "int"),
             ("HitUntil", "float"), ("StepAt", "float"), ("AnimState", "int"), ("Goal", "Vector"),
             ("HasGoal", "bool"), ("HandBone", "name"), ("HeadBone", "name"), ("Engaged", "bool"),
-            ("LeftHand", "name"), ("Calibrated", "bool"), ("Frames", "int"),
+            ("LeftHand", "name"), ("Calibrated", "bool"), ("Frames", "int"), ("SightedAt", "float"),
         ],
         "object_variables": [("Target", ACTOR, None), ("Anims", ANIM, "ARRAY")],
         "components": [("Gun", "StaticMeshComponent")],
@@ -169,6 +169,8 @@ def bot(assets: dict) -> dict:
   (Rendering|SetVisibility :self (Variables|Default|GetGun) :bNewVisibility false :bPropagateToChildren false)
   (bind body (Variables|Character|GetMesh))
   (bind gun (Variables|Default|GetGun))
+  ; the rifle sits at the cheek: a shot that meets it is not a headshot, so it stops nothing
+  (Collision|SetCollisionEnabled :self gun :NewType "NoCollision")
   (Class|CharacterMovementComponent|SetOrientRotationtoMovement
     :self (Variables|Character|GetCharacterMovement) :bOrientRotationToMovement true)
   (Class|CharacterMovementComponent|SetMaxWalkSpeed :self (Variables|Character|GetCharacterMovement)
@@ -250,7 +252,10 @@ def bot(assets: dict) -> dict:
   (bind aim (+ (Transformation|GetActorLocation :self target) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z aimz)))
   ; spread like a rifle sprayed by a person: a first shot is accurate, the burst and moving widen it
   (bind moving (> (Math|Vector|VectorLengthXY (Transformation|GetVelocity :self self)) 60.0))
-  (bind cone (+ (+ 1.2 (select moving 3.5 0.0)) (* (- 5 (Math|Integer|Min(Integer) (Variables|Default|GetBurst) 5)) 0.7)))
+  ; the aim settles on a target it has just seen: wide at first, about a second to tighten
+  (bind settle (Math|Float|Max(Float) 0.0 (- 6.0 (* 4.5 (- (Variables|Default|GetClock) (Variables|Default|GetSightedAt))))))
+  (bind cone (+ (+ (+ 1.0 settle) (select moving 3.5 0.0))
+                (* (- 5 (Math|Integer|Min(Integer) (Variables|Default|GetBurst) 5)) 0.6)))
   (bind dir (Math|Random|RandomUnitVectorinConeinDegrees :ConeDir (Math|Vector|Normalize (- aim eye))
                                                           :ConeHalfAngleInDegrees cone))
   (bind muzzle (+ (Transformation|GetWorldLocation :self gun) (* (Transformation|GetRightVector :self gun) 55.0)))
@@ -281,6 +286,7 @@ def bot(assets: dict) -> dict:
         (:then
           (if any
               (if (not (Variables|Default|GetEngaged))
+                (Variables|Default|SetSightedAt (Variables|Default|GetClock))
                 (Variables|Default|SetReactAt (+ (Variables|Default|GetClock)
                                                   (Math|Random|RandomFloatinRange :Min 0.25 :Max 0.6))))
               (Variables|Default|SetEngaged true)
@@ -358,7 +364,7 @@ def player(assets: dict) -> dict:
         "parent": PLAYER_PARENT,
         "variables": [
             ("Team", "string"), ("Health", "float"), ("Armor", "float"), ("Ammo", "int"), ("Reserve", "int"),
-            ("Dead", "bool"), ("FireHeld", "bool"), ("ReloadHeld", "bool"), ("ShotAt", "float"),
+            ("Dead", "bool"), ("FireHeld", "bool"), ("ReloadHeld", "bool"), ("God", "bool"), ("ShotAt", "float"),
             ("ReloadUntil", "float"), ("Reloading", "bool"), ("Spray", "int"), ("RecoilDebt", "float"),
             ("LastFireAt", "float"), ("Clock", "float"), ("AnimState", "int"), ("StepAt", "float"),
             ("ViewKick", "float"), ("ViewBase", "Vector"), ("Spread", "float"),
@@ -383,7 +389,12 @@ def player(assets: dict) -> dict:
   (bind view (Variables|Default|GetView))
   (bind gun1 (Variables|Default|GetGun1P))
   (bind gun3 (Variables|Default|GetGun3P))
+  ; the rifles and the view model stop no shot or sight line (only the body does)
+  (Collision|SetCollisionEnabled :self gun1 :NewType "NoCollision")
+  (Collision|SetCollisionEnabled :self gun3 :NewType "NoCollision")
+  (Collision|SetCollisionEnabled :self view :NewType "NoCollision")
   (Rendering|SetOwnerNoSee :self body :bNewOwnerNoSee true)
+  (Rendering|SetVisibility :self view :bNewVisibility false :bPropagateToChildren true)
   (Rendering|SetOwnerNoSee :self gun3 :bNewOwnerNoSee true)
   (Rendering|SetOnlyOwnerSee :self view :bNewOnlyOwnerSee true)
   (Rendering|SetOnlyOwnerSee :self gun1 :bNewOnlyOwnerSee true)
@@ -434,7 +445,8 @@ def player(assets: dict) -> dict:
     :Forward (Transformation|GetActorForwardVector :self self))
   (bind eyes (Transformation|GetSocketLocation :self view :InSocketName (Variables|Default|GetHeadBone)))
   (bind want (+ where (Math|Vector|RotateVector :A (Variables|Default|GetViewEye) :B turn)))
-  (Variables|Default|SetViewBase (+ (Variables|Default|GetViewBase) (Math|Vector|UnrotateVector :A (- want eyes) :B turn))))
+  (Variables|Default|SetViewBase (+ (Variables|Default|GetViewBase) (Math|Vector|UnrotateVector :A (- want eyes) :B turn)))
+  (Rendering|SetVisibility :self view :bNewVisibility true :bPropagateToChildren true))
 """),
             ("MixarCameraPose", [], [("Where", "Vector"), ("Turn", "Rotator")], """
 (fn MixarCameraPose ()
@@ -495,12 +507,15 @@ def player(assets: dict) -> dict:
   (Collision|SetCollisionEnabled :self (Variables|Character|GetCapsuleComponent) :NewType "QueryAndPhysics")
   (CallFunction|MixarArm :Length 0.0)
   (Rendering|SetOwnerNoSee :self (Variables|Character|GetMesh) :bNewOwnerNoSee true)
-  (Rendering|SetVisibility :self (Variables|Default|GetView) :bNewVisibility true :bPropagateToChildren true))
+  ; shown once calibrated (before that the arms are not where the eyes are)
+  (Rendering|SetVisibility :self (Variables|Default|GetView) :bNewVisibility (Variables|Default|GetCalibrated)
+    :bPropagateToChildren true))
 """),
             ("MixarTakeDamage", [("Amount", "float", False), ("Headshot", "bool", False), ("From", ACTOR, True)],
              [], f"""
 (fn MixarTakeDamage (Amount Headshot From)
-  (if (not (Variables|Default|GetDead))
+  ; God: a playtest's cheat (as CS's god), so a test of the rifle is not cut short
+  (if (and (not (Variables|Default|GetDead)) (not (Variables|Default|GetGod)))
     (bind hit (* Amount (select Headshot 4.0 1.0)))
     (bind armored (> (Variables|Default|GetArmor) 0.0))
     (Variables|Default|SetHealth (Math|Float|Max(Float) 0.0
@@ -578,8 +593,10 @@ def player(assets: dict) -> dict:
         ],
         "events": f"""
 (event EventTick (DeltaSeconds)
-  (bind clock (+ (Variables|Default|GetClock) DeltaSeconds))
-  (Variables|Default|SetClock clock)
+  ; set first, then bound to the variable: a bound expression is re-read at each use, so
+  ; (bind clock (+ Clock Delta)) read after SetClock would run a frame ahead
+  (Variables|Default|SetClock (+ (Variables|Default|GetClock) DeltaSeconds))
+  (bind clock (Variables|Default|GetClock))
   (Variables|Default|SetDelta DeltaSeconds)
   (Variables|Default|SetFrames (+ (Variables|Default|GetFrames) 1))
   (if (and (not (Variables|Default|GetCalibrated)) (and (> clock 0.4) (> (Variables|Default|GetFrames) 5)))
@@ -813,8 +830,11 @@ def game_mode(assets: dict) -> dict:
     (bind slot (+ i First))
     (bind base (select (> (Utilities|Array|Length spots) 0)
                  (Transformation|GetActorLocation :self (Utilities|Array|Get(acopy) spots (Math|Integer|%(Integer) slot n))) home))
+    ; one per spawn point, then lined up behind it (away from the enemy), 1.5 m apart: slot 0 is the player's
     (bind row (/ slot n))
-    (bind at (+ base (Math|Vector|MakeVector :X (* (- (Math|Integer|%(Integer) row 3) 1) 160.0) :Y (* (- (/ row 3) 0) 160.0) :Z 100.0)))
+    (bind back (Math|Vector|Normalize (Math|Vector|MakeVector :X (- (.x home) (.x enemy)) :Y (- (.y home) (.y enemy)) :Z 0.0)))
+    (bind at (+ (+ base (* back (* row 150.0)))
+                (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 100.0)))
     (bind spawned (Game|SpawnActorfromClass :Class "{BOT_CLASS}"
                     :SpawnTransform (Math|Transform|MakeTransform :Location at
                                       :Rotation (Math|Rotator|MakeRotator :Roll 0.0 :Pitch 0.0 :Yaw (.yaw facing)))

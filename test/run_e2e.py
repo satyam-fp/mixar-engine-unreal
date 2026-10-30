@@ -450,14 +450,16 @@ def shooter_checks(mcp, toolset: str, packages: str) -> None:
                   data.get("animation"))
     ok, data = call(mcp, toolset, "play", {"scene": "current"})
     check("play: the shooter", ok and data.get("playing"), data)
-    ok, data = playtest(mcp, toolset, [{"wait": 2}, {"aim_at": [-17, 0, 1.2]}, {"fire": 1.0}, {"reload": True},
-                                       {"wait": 3}])
+    ok, data = playtest(mcp, toolset, [{"inspect": {"node": "BP_MixarBot_C"}}, {"god": True}, {"aim_at": [-17, 0, 1.2]}, {"fire": 1.0},
+                                       {"reload": True}, {"wait": 4.5}, {"god": False}])
     steps = data.get("steps") or [{}] * 5
-    start = steps[0].get("state", {}) if steps else {}
-    check("shooter: round 1, 5 v 5", start.get("round") == 1 and start.get("alive_ct") == 5
-          and start.get("alive_t") == 5, start)
-    shots = (steps[2] if len(steps) > 2 else {}).get("shots", 0)
-    check("shooter: the rifle fires (about 10 shots a second)", 6 <= shots <= 11, steps[2] if len(steps) > 2 else data)
+    start = steps[0] if steps else {}
+    # the game runs before the first step: count the bots spawned (corpses stay), not the living
+    check("shooter: round 1, 5 v 5 (4 CT bots and the player, 5 T bots)",
+          start.get("state", {}).get("round") == 1 and len(start.get("similar") or []) == 9, start)
+    fired = steps[3] if len(steps) > 3 else {}
+    rate = fired.get("shots", 0) / max(fired.get("game_seconds") or 1.0, 0.05)
+    check("shooter: the rifle fires (about 10 shots a second of game time)", 7 <= rate <= 13, fired or data)
     final = data.get("final_state") or {}
     check("shooter: reload fills the magazine", final.get("ammo") == 30 and final.get("reserve", 90) < 90, final)
     ok, png = call(mcp, toolset, "capture", {"source": "game", "max_width": 960})
