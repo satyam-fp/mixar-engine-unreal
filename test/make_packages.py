@@ -8,6 +8,8 @@ Writes into <out dir>:
 - ``UEQA_PropYard``: 40 props in a 8 x 5 grid, mixed roles (prop, pickup,
   door with a hinge, hazard, goal), bodies and collision shapes (box, convex,
   mesh, none) — each object keeps its own origin;
+- ``UEQA_Robot``: a mesh on a custom 3-bone rig, exported (as the agent did)
+  with only the mesh named — it must still import skinned;
 - ``UEQA_Course``: a small winnable level (coins, a hinged door in the only
   gap of a wall, the flag behind it, a spike, a spawn and a checkpoint);
 - ``UEQA_Hero``: the rigged character (a Tripo auto-rig), when given.
@@ -156,6 +158,47 @@ def course():
     print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
 
 
+def robot():
+    """A rigid robot on a custom 3-bone rig (no humanoid naming), as a scripted
+    rig comes out of Mixar: it must still import skinned."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.object.armature_add(location=(0.0, 0.0, 0.0))
+    rig = bpy.context.object
+    rig.name = rig.data.name = "Robot_Rig"
+    bpy.ops.object.mode_set(mode="EDIT")
+    bones = rig.data.edit_bones
+    root = bones[0]
+    root.name, root.head, root.tail = "Root", (0, 0, 0), (0, 0, 0.8)
+    torso = bones.new("Torso")
+    torso.head, torso.tail, torso.parent = (0, 0, 0.8), (0, 0, 1.4), root
+    head = bones.new("Head")
+    head.head, head.tail, head.parent = (0, 0, 1.4), (0, 0, 1.8), torso
+    bpy.ops.object.mode_set(mode="OBJECT")
+    parts = []
+    for bone, size, z in (("Root", (0.4, 0.3, 0.8), 0.4), ("Torso", (0.6, 0.4, 0.6), 1.1),
+                          ("Head", (0.35, 0.35, 0.35), 1.6)):
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, z))
+        part = bpy.context.object
+        part.scale = size
+        bpy.ops.object.transform_apply(scale=True)
+        group = part.vertex_groups.new(name=bone)
+        group.add(list(range(len(part.data.vertices))), 1.0, "REPLACE")
+        parts.append(part)
+    bpy.ops.object.select_all(action="DESELECT")
+    for part in parts:
+        part.select_set(True)
+    bpy.context.view_layer.objects.active = parts[0]
+    bpy.ops.object.join()
+    body = bpy.context.object
+    body.name = body.data.name = "Robot_Body"
+    body.data.materials.append(material("M_Robot", (0.7, 0.7, 0.75)))
+    body.parent = rig
+    body.modifiers.new("Armature", "ARMATURE").object = rig
+    result = export_package.export_package(["Robot_Body"], fmt="fbx", folder="UEQA_Robot", engine="unreal",
+                                           animations=[], bake_materials=False)
+    print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
+
+
 def hero(glb):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.gltf(filepath=glb)
@@ -173,5 +216,6 @@ def hero(glb):
 
 prop_yard()
 course()
+robot()
 if rig:
     hero(rig)

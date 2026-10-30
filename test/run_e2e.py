@@ -33,6 +33,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.request
@@ -217,10 +218,11 @@ def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
     ok, data = call(mcp, toolset, "stop", {})
     check("stop", ok and data.get("playing") is False, data)
     ok, data = call(mcp, toolset, "capture", {"source": "editor"})
-    check("capture: the editor viewport", ok and base64.b64decode(data.get("image_base64") or "")[:4] == b"\x89PNG",
-          data.get("error"))
+    check("capture: the editor viewport", ok and base64.b64decode(data.get("image_base64") or "")[:4] == b"\x89PNG"
+          and (data.get("width") or 0) > 0, {k: v for k, v in data.items() if k != "image_base64"})
 
     game_checks(mcp, toolset, packages)
+    rig_checks(mcp, toolset, packages)
 
     set_mode(project, "plugin")  # the user's own project: Mixar's own levels only
     ok, data = call(mcp, toolset, "open_scene", {"scene": "/Game/ThirdPerson/Lvl_ThirdPerson"})
@@ -349,6 +351,48 @@ def game_checks(mcp, toolset: str, packages: str) -> None:
     b = steps[-1].get("state", {}).get("player_position", [0, 0, 0])
     check("top_down: forward is north (Blender +Y)", b[1] > a[1] + 1.0 and abs(b[0] - a[0]) < 0.3, [a, b])
     call(mcp, toolset, "stop", {})
+
+
+def rig_checks(mcp, toolset: str, packages: str) -> None:
+    """A custom rig (no humanoid naming) imports skinned and places; an older
+    package that lists no skeleton too; a package nothing of which matches
+    is an error, not an empty success (uat4 2026-10-30: a scripted robot rig
+    came in as a static mesh that could not be placed)."""
+    robot = os.path.join(packages, "UEQA_Robot")
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": robot, "folder": "UEQA_Robot"})
+    check("import_package: a custom rig imports skinned", ok and data.get("skeletal") is True
+          and data.get("objects") == ["Robot_Body"] and "skipped" in (data.get("retarget") or {}), data)
+    old = tempfile.mkdtemp(prefix="ueqa-old-")
+    shutil.copytree(robot, os.path.join(old, "UEQA_RobotOld"))
+    manifest_path = os.path.join(old, "UEQA_RobotOld", "manifest.json")
+    manifest = json.load(open(manifest_path))
+    manifest["engine"].pop("skeletons", None)
+    json.dump(manifest, open(manifest_path, "w"))
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": os.path.join(old, "UEQA_RobotOld"),
+                                                     "folder": "UEQA_RobotOld"})
+    check("import_package: an older package's rig is found in its FBX", ok and data.get("skeletal") is True
+          and data.get("objects") == ["Robot_Body"], data)
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Robot", "name": "Robot",
+                                            "position": [3, 3, 0], "parent": "", "animation": ""})
+    ok2, tree = call(mcp, toolset, "scene_tree", {"max_nodes": 500})
+    node = next((n for n in tree.get("nodes") or [] if n["path"].endswith("Robot")), {})
+    check("place: the rigged robot", ok and node.get("type") == "SkeletalMeshActor", [data, node])
+    shutil.copytree(os.path.join(packages, "UEQA_Course"), os.path.join(old, "UEQA_Wrong"))
+    manifest_path = os.path.join(old, "UEQA_Wrong", "manifest.json")
+    manifest = json.load(open(manifest_path))
+    for entry in manifest["engine"]["objects"]:
+        entry["name"] = "Nope_" + entry["name"]
+    json.dump(manifest, open(manifest_path, "w"))
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": os.path.join(old, "UEQA_Wrong"),
+                                                     "folder": "UEQA_Wrong"})
+    check("import_package: nothing matching is an error", not ok and "none of it matches" in data.get("error", ""),
+          data)
+    shutil.rmtree(old, ignore_errors=True)
+    ok, data = call(mcp, toolset, "add_node", {"type": "StaticMeshActor", "name": "Crate", "parent": "",
+                                               "script": "", "position": [5, 5, 0.5]})
+    ok, data = call(mcp, toolset, "set_property", {"node": "Crate", "property": "StaticMeshComponent.StaticMesh",
+                                                   "value": json.dumps("/Engine/BasicShapes/Cube.Cube")})
+    check("set_property: a component by its class name", ok, data)
 
 
 def main() -> int:

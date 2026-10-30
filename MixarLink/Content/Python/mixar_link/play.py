@@ -197,7 +197,12 @@ def _capture_editor():
         image = value.get("image") if isinstance(value, dict) else None
         if not isinstance(image, dict) or not image.get("data"):
             return _err("The editor viewport capture returned no image.")
-        return _ok({"source": "editor", "width": image.get("width"), "height": image.get("height"),
+        width, height = image.get("width"), image.get("height")
+        if not width:  # Epic's capture names no size; a PNG's header has it
+            head = base64.b64decode(image["data"][:64])
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                width, height = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+        return _ok({"source": "editor", "width": width, "height": height,
                     "image_base64": image["data"], "image_mime": image.get("mimeType") or "image/png"})
 
     return wait(finished, CAPTURE_TIMEOUT_S, lambda: _err("The editor viewport capture did not finish."))

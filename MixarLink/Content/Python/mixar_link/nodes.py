@@ -77,9 +77,12 @@ def _target(actor, prop: str):
     if "." not in prop:
         return actor, prop
     comp_name, prop = prop.split(".", 1)
-    for comp in actor.get_components_by_class(unreal.ActorComponent):
-        if comp.get_name() == comp_name:
-            return comp, prop
+    comps = list(actor.get_components_by_class(unreal.ActorComponent))
+    # By name, else by class: "StaticMeshComponent" finds StaticMeshComponent0.
+    for match in (lambda c: c.get_name() == comp_name, lambda c: c.get_class().get_name() == comp_name):
+        found = [c for c in comps if match(c)]
+        if found:
+            return found[0], prop
     raise LookupError(f"{actor.get_actor_label()} has no component {comp_name} "
                       f"(it has: {', '.join(c.get_name() for c in actor.get_components_by_class(unreal.ActorComponent))})")
 

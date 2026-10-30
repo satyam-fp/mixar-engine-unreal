@@ -96,6 +96,21 @@ def _tag(asset, values: dict) -> None:
         unreal.EditorAssetLibrary.set_metadata_tag(asset, key, str(value))
 
 
+def _has_bones(path: str) -> bool:
+    """Whether the FBX carries a skeleton (bone nodes are ``LimbNode``s; a
+    binary FBX stores the word as plain bytes). Packages exported before the
+    manifest listed every armature say so only here."""
+    tail = b""
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                return False
+            if b"LimbNode" in tail + chunk:
+                return True
+            tail = chunk[-8:]
+
+
 def _origin(entry: dict) -> str:
     origin = entry.get("origin") or [0.0, 0.0, 0.0]
     return ",".join(f"{float(v):.4f}" for v in origin[:3])
@@ -120,7 +135,8 @@ def import_package(source_dir: str, folder: str) -> dict:
     name = safe_folder(folder)
     dest = f"{MIXAR_FOLDER}/{name}"
     skeletons = [s for s in engine.get("skeletons") or [] if isinstance(s, dict)]
-    skeletal = bool(skeletons)
+    # Any rig imports skinned; a bone map only adds Mannequin retargeting.
+    skeletal = bool(skeletons) or _has_bones(source)
     paths = _import(source, dest, skeletal)
     if not paths:
         return {"error": "Unreal imported nothing from the package's FBX; read log for the importer's reason."}
@@ -149,6 +165,11 @@ def import_package(source_dir: str, folder: str) -> dict:
         objects.append(entry["name"])
         if skeletal:
             break  # one character per rigged package
+    if entries and not objects:
+        made = ", ".join(sorted(loaded)) or "nothing"
+        return {"error": f"Unreal built {made} from the package, but none of it matches the package's "
+                         f"objects ({', '.join(missing)}); nothing can be placed. Read log for the importer's "
+                         f"messages."}
     out = {"folder": name, "main_scene": dest, "objects": objects, "meshes": len(meshes),
            "collision": {"convex_hulls": hulls, "complex_as_simple": complex_simple},
            "issues": list(engine.get("issues") or [])}
@@ -159,12 +180,17 @@ def import_package(source_dir: str, folder: str) -> dict:
         out["animations"] = anims
     if skeletal and meshes:
         character = next(iter(meshes.values()))
-        skeleton = skeletons[0]
+        skeleton = skeletons[0] if skeletons else {"naming": "custom", "bones": {}}
         _tag(character, {"mixar_bone_naming": skeleton.get("naming") or "",
                          "mixar_bone_map": json.dumps(skeleton.get("bones") or {})})
-        setup = retarget.prepare(character, skeleton.get("bones") or {}, dest, name)
-        out["retarget"] = setup
-        if "error" not in setup:
-            out["mannequin_clips"] = retarget.mannequin_clips()
+        out["skeletal"] = True
+        if skeleton.get("bones"):
+            setup = retarget.prepare(character, skeleton["bones"], dest, name)
+            out["retarget"] = setup
+            if "error" not in setup:
+                out["mannequin_clips"] = retarget.mannequin_clips()
+        else:
+            out["retarget"] = {"skipped": "a custom rig (no humanoid bone map): it plays its own clips; "
+                                          "Mannequin clips do not retarget onto it"}
     unreal.EditorAssetLibrary.save_directory(dest)
     return out
