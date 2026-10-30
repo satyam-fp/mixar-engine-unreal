@@ -6,7 +6,10 @@
 - ``BP_MixarGameMode`` — the rules (third person);
 - ``BP_MixarGameMode_TopDown`` / ``BP_MixarGameMode_Platformer`` — children
   that only change ``Template`` (camera and movement);
-- ``BP_MixarHUD`` — collected count and the win / lose banner.
+- ``BP_MixarHUD`` — title card, count, time, hit flash and end screen;
+- ``BP_MixarGameInfo`` — a level's title, objective and music / wind
+  switches (one per level, made by ``new_scene``);
+- the sounds and effects of ``game_assets``.
 
 They are ordinary Blueprints in the project, so a packaged game carries them.
 The graphs are written with Epic's EditorToolset (``BlueprintTools``): its
@@ -15,15 +18,25 @@ is the project's third-person GameMode (``/Game/ThirdPerson``), which brings
 the player character and its Enhanced Input set-up.
 """
 
+import hashlib
 import re
 
 import unreal
 
-from . import ADAPTER_VERSION, MIXAR_FOLDER, game_spec
+from . import ADAPTER_VERSION, MIXAR_FOLDER, game_assets, game_spec
 
 GAME_FOLDER = f"{MIXAR_FOLDER}/Game"
 VERSION_TAG = "mixar_game_version"
 CHILDREN = {"top_down": "BP_MixarGameMode_TopDown", "platformer": "BP_MixarGameMode_Platformer"}
+
+
+def _build_id() -> str:
+    """The release plus the game's own sources: a changed spec rebuilds."""
+    digest = hashlib.sha1()
+    for module in (game_spec, game_assets):
+        with open(module.__file__, "rb") as fh:
+            digest.update(fh.read())
+    return f"{ADAPTER_VERSION}+{digest.hexdigest()[:10]}"
 
 
 def tools():
@@ -47,7 +60,7 @@ def _class(name: str):
 def _current(name: str) -> bool:
     asset = unreal.EditorAssetLibrary.load_asset(_path(name)) \
         if unreal.EditorAssetLibrary.does_asset_exist(_path(name)) else None
-    return bool(asset) and unreal.EditorAssetLibrary.get_metadata_tag(asset, VERSION_TAG) == ADAPTER_VERSION
+    return bool(asset) and unreal.EditorAssetLibrary.get_metadata_tag(asset, VERSION_TAG) == _build_id()
 
 
 def _blueprint(bt, name: str, parent_class):
@@ -71,10 +84,14 @@ def _apply(bt, bp, spec: dict) -> None:
         if var[0] not in have:
             container = getattr(_container(), var[2]) if len(var) > 2 else None
             bt.add_variable(bp, var[0], var[1], None, container)
+        if spec.get("editable"):
+            bt.set_variable_instance_editable(bp, var[0], True)
     for name, cls, container in spec.get("object_variables", ()):
         if name not in have:
             bt.add_object_variable(bp, name, unreal.load_class(None, cls), None,
                                    getattr(_container(), container) if container else None)
+        if spec.get("editable"):
+            bt.set_variable_instance_editable(bp, name, True)
     present = {g.get_name(): g for g in bt.list_graphs(bp)}
     graphs = {}
     for fname, params, outs, _ in spec.get("functions", ()):
@@ -104,6 +121,11 @@ def _apply(bt, bp, spec: dict) -> None:
     if spec.get("events"):
         bt.write_graph_dsl(unreal.BlueprintEditorLibrary.find_event_graph(bp), spec["events"])
     bt.compile_blueprint(bp, False)
+    if spec.get("defaults"):
+        cdo = unreal.get_default_object(_class(spec["name"]))
+        for key, value in spec["defaults"].items():
+            cdo.set_editor_property(key, value)
+        bt.compile_blueprint(bp, False)
     _verify(bt, bp, spec)
 
 
@@ -124,13 +146,13 @@ def _container():
 
 def _stamp(name: str) -> None:
     asset = unreal.EditorAssetLibrary.load_asset(_path(name))
-    unreal.EditorAssetLibrary.set_metadata_tag(asset, VERSION_TAG, ADAPTER_VERSION)
+    unreal.EditorAssetLibrary.set_metadata_tag(asset, VERSION_TAG, _build_id())
     unreal.EditorAssetLibrary.save_loaded_asset(asset, False)
 
 
 def ensure() -> dict:
     """{template: GameMode class path} for every template, or {"error"}."""
-    names = [game_spec.GAME_MODE["name"], game_spec.HUD["name"], *CHILDREN.values()]
+    names = [game_spec.GAME_INFO["name"], game_spec.GAME_MODE["name"], game_spec.HUD["name"], *CHILDREN.values()]
     if all(_current(n) for n in names):
         return _classes()
     bt = tools()
@@ -144,8 +166,13 @@ def ensure() -> dict:
                          "not got. A game Mixar made from the Third Person template has it; here, build "
                          "the game's own Blueprints with the blueprint tool."}
     try:
+        info = _blueprint(bt, game_spec.GAME_INFO["name"], unreal.Actor.static_class())
+        _apply(bt, info, game_spec.GAME_INFO)
+        assets = game_assets.ensure()
+        spec = dict(game_spec.GAME_MODE)
+        spec["functions"] = list(spec["functions"]) + game_spec.fx_functions(assets)
         gm = _blueprint(bt, game_spec.GAME_MODE["name"], parent)
-        _apply(bt, gm, game_spec.GAME_MODE)
+        _apply(bt, gm, spec)
         hud = _blueprint(bt, game_spec.HUD["name"], unreal.HUD.static_class())
         _apply(bt, hud, game_spec.HUD)
         gm_class = _class(game_spec.GAME_MODE["name"])
@@ -169,6 +196,10 @@ def ensure() -> dict:
 def _classes() -> dict:
     return {"third_person": _class(game_spec.GAME_MODE["name"]),
             **{t: _class(n) for t, n in CHILDREN.items()}}
+
+
+def info_class():
+    return _class(game_spec.GAME_INFO["name"])
 
 
 def game_mode(world):

@@ -121,8 +121,10 @@ def mannequin_clips(limit: int = 60) -> list:
     return sorted(found)
 
 
-def retarget_clips(target, retargeter: str, clips: list, folder: str, name: str) -> list:
-    """Each Mannequin clip duplicated onto ``target``; returns their paths."""
+def retarget_clips(target, retargeter: str, clips: list, folder: str, name: str, references: bool = False) -> list:
+    """Each Mannequin clip (or animation Blueprint, with ``references`` the
+    blend spaces and clips it uses) duplicated onto ``target``; returns their
+    paths."""
     manny = mannequin()
     rtg = unreal.EditorAssetLibrary.load_asset(retargeter)
     if manny is None or rtg is None:
@@ -136,7 +138,7 @@ def retarget_clips(target, retargeter: str, clips: list, folder: str, name: str)
     inputs.set_editor_property("ik_retarget_asset", rtg)
     inputs.set_editor_property("suffix", f"_{name}")
     inputs.set_editor_property("target_path", anims)
-    inputs.set_editor_property("include_referenced_assets", False)
+    inputs.set_editor_property("include_referenced_assets", references)
     inputs.set_editor_property("overwrite_existing_files", True)
     created = unreal.IKRetargetBatchOperation.run_batch_retarget(inputs)
     unreal.EditorAssetLibrary.save_directory(anims)

@@ -62,6 +62,10 @@ def _fbx_options(skeletal: bool):
         data.set_editor_property("transform_vertex_to_absolute", False)
         data.set_editor_property("bake_pivot_in_vertex", False)
         data.auto_generate_collision = False
+        try:  # Nanite: hundreds of placed pieces draw as one, with no LODs to author
+            data.set_editor_property("build_nanite", True)
+        except Exception:  # noqa: BLE001 - an engine without the option imports without it
+            pass
     return options
 
 

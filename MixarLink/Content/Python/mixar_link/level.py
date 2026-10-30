@@ -9,7 +9,14 @@ by ``position`` and turned by ``yaw_deg`` about the package's own origin,
 under the outliner folder ``Mixar/<instance>``. Actors carry the objects'
 tags as actor tags (``mixar_role=pickup`` …), take their mobility and
 physics from ``mixar_body``, and a rigged character can play a Mannequin clip
-(retargeted on first use).
+(retargeted on first use). A rigged humanoid tagged ``mixar_role=player``
+gets the template's third-person animation retargeted onto it: the template
+game plays as it instead of the Mannequin.
+
+``new_scene`` lights a level by ``look`` (day, sunset, dawn, night, overcast):
+sun, sky atmosphere, sky light, volumetric clouds, height fog and a post
+process (bloom, exposure, grading). ``floating`` sinks the planet's ground and
+the cloud layer under the level, for islands in the sky.
 """
 
 import math
@@ -24,11 +31,26 @@ LEVELS = f"{MIXAR_FOLDER}/Levels"
 INSTANCE_FOLDER = "Mixar"
 MAPS_SECTION = "[/Script/EngineSettings.GameMapsSettings]"
 GROUND_SIZE_M = 60.0
+_UNARMED = "/Game/Characters/Mannequins/Anims/Unarmed"
+# The player's clips, retargeted from the Mannequin's: game info variable -> clip.
+PLAYER_CLIPS = {"IdleAnim": f"{_UNARMED}/MM_Idle", "RunAnim": f"{_UNARMED}/Jog/MF_Unarmed_Jog_Fwd",
+                "FallAnim": f"{_UNARMED}/Jump/MM_Fall_Loop"}
+# look: (sun pitch, sun yaw, lux, sun colour, sky light, fog density, fog colour, bloom, exposure bias)
+LOOKS = {
+    "day": (-48.0, -35.0, 10.0, (1.0, 0.97, 0.92), 1.0, 0.006, (0.14, 0.19, 0.27), 0.6, 0.0),
+    "sunset": (-11.0, -60.0, 8.0, (1.0, 0.72, 0.45), 1.0, 0.008, (0.3, 0.19, 0.12), 0.9, 0.4),
+    "dawn": (-9.0, 110.0, 6.0, (1.0, 0.78, 0.68), 1.0, 0.01, (0.26, 0.2, 0.22), 0.8, 0.4),
+    "night": (-40.0, -20.0, 0.8, (0.62, 0.7, 1.0), 0.35, 0.01, (0.03, 0.04, 0.08), 0.7, 1.2),
+    "overcast": (-62.0, 10.0, 3.5, (0.9, 0.92, 0.96), 1.4, 0.02, (0.2, 0.21, 0.23), 0.4, 0.3),
+}
+FLOATING_GROUND_KM = 6.0
 NAV_LABEL = "MixarNavigation"
 # Roles the template game moves at run time, so their actors are Movable.
 MOVING_ROLES = {"pickup", "door", "hazard", "enemy"}
-# Roles the player walks through: they never block navigation.
-WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn"}
+# Roles that never shape the navigation mesh: the player walks through the
+# first ones, and dodges hazards and enemies rather than routing around them
+# (a moving one would carve and re-carve the mesh, and paths would come and go).
+WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn", "hazard", "enemy", "player"}
 
 
 def _sub(cls):
@@ -113,14 +135,54 @@ def _spawn(cls, location=(0.0, 0.0, 0.0), pitch=0.0, yaw=0.0, label=""):
     return actor
 
 
-def _defaults(ground: bool, player_position) -> None:
-    sun = _spawn(unreal.DirectionalLight, (0, 0, 1000), pitch=-45.0, yaw=-30.0, label="Sun")
-    sun.light_component.set_editor_property("atmosphere_sun_light", True)
-    _spawn(unreal.SkyAtmosphere, label="SkyAtmosphere")
-    sky = _spawn(unreal.SkyLight, (0, 0, 500), label="SkyLight")
-    sky.light_component.set_editor_property("real_time_capture", True)
-    sky.light_component.set_mobility(unreal.ComponentMobility.MOVABLE)
-    _spawn(unreal.ExponentialHeightFog, label="Fog")
+def _set(obj, **values) -> None:
+    """Set what this engine version has; a renamed property is skipped."""
+    for key, value in values.items():
+        try:
+            obj.set_editor_property(key, value)
+        except Exception:  # noqa: BLE001
+            unreal.log_warning(f"[Mixar Link] {obj.get_name()} has no {key}")
+
+
+def _post_process(bloom: float, exposure: float) -> None:
+    volume = _spawn(unreal.PostProcessVolume, label="PostProcess")
+    volume.set_editor_property("unbound", True)
+    settings = volume.get_editor_property("settings")
+    for key, value in (("bloom_intensity", bloom), ("auto_exposure_bias", exposure), ("vignette_intensity", 0.35),
+                       ("color_saturation", unreal.Vector4(1.08, 1.08, 1.08, 1.0)),
+                       ("color_contrast", unreal.Vector4(1.05, 1.05, 1.05, 1.0)),
+                       ("film_toe", 0.6)):
+        try:
+            settings.set_editor_property("override_" + key, True)
+            settings.set_editor_property(key, value)
+        except Exception:  # noqa: BLE001 - a setting this engine lacks
+            unreal.log_warning(f"[Mixar Link] post process has no {key}")
+    volume.set_editor_property("settings", settings)
+
+
+def _defaults(ground: bool, player_position, look: str = "", floating: bool = False) -> None:
+    pitch, yaw, lux, colour, sky_level, fog_density, fog_colour, bloom, exposure = LOOKS.get(look, LOOKS["day"])
+    sun = _spawn(unreal.DirectionalLight, (0, 0, 1000), pitch=pitch, yaw=yaw, label="Sun")
+    light = sun.light_component
+    _set(light, atmosphere_sun_light=True, intensity=lux, light_color=unreal.Color(*[int(c * 255) for c in colour], 255))
+    sky = _spawn(unreal.SkyAtmosphere, label="SkyAtmosphere")
+    skylight = _spawn(unreal.SkyLight, (0, 0, 500), label="SkyLight")
+    skylight.light_component.set_editor_property("real_time_capture", True)
+    skylight.light_component.set_mobility(unreal.ComponentMobility.MOVABLE)
+    _set(skylight.light_component, intensity=sky_level)
+    fog = _spawn(unreal.ExponentialHeightFog, label="Fog").get_component_by_class(unreal.ExponentialHeightFogComponent)
+    _set(fog, fog_density=fog_density, fog_height_falloff=0.12, enable_volumetric_fog=True,
+         fog_inscattering_luminance=unreal.LinearColor(*fog_colour, 1.0),
+         directional_inscattering_luminance=unreal.LinearColor(*colour, 1.0))
+    clouds = _spawn(unreal.VolumetricCloud, label="Clouds")
+    if floating:  # the ground is far below and the cloud tops sit under the level
+        _set(sky.get_component_by_class(unreal.SkyAtmosphereComponent),
+             transform_mode=unreal.SkyAtmosphereTransformMode.PLANET_TOP_AT_COMPONENT_TRANSFORM)
+        sky.set_actor_location(unreal.Vector(0.0, 0.0, -FLOATING_GROUND_KM * 100000.0), False, True)
+        _set(clouds.get_component_by_class(unreal.VolumetricCloudComponent),
+             layer_bottom_altitude=FLOATING_GROUND_KM - 2.5, layer_height=1.8)
+        _set(fog, fog_height_falloff=0.08, fog_density=fog_density * 0.6)
+    _post_process(bloom, exposure)
     start = frames.from_blender(player_position) if player_position else (0.0, 0.0, 100.0)
     _spawn(unreal.PlayerStart, start, label="PlayerStart")
     if ground:
@@ -130,7 +192,8 @@ def _defaults(ground: bool, player_position) -> None:
 
 
 def new_scene(name: str, set_as_main: bool, with_defaults: bool, overwrite: bool, ground: bool,
-              player_position, template: str = "") -> dict:
+              player_position, template: str = "", look: str = "", floating: bool = False, title: str = "",
+              objective: str = "") -> dict:
     path = f"{LEVELS}/{name}"
     game_mode = None
     if template:
@@ -158,27 +221,31 @@ def new_scene(name: str, set_as_main: bool, with_defaults: bool, overwrite: bool
         if not _sub(unreal.LevelEditorSubsystem).new_level(path):
             return {"error": f"Unreal could not make the level {path}."}
     if with_defaults:
-        _defaults(ground, player_position)
+        _defaults(ground, player_position, look, floating)
     elif ground:
-        _defaults(True, player_position)
+        _defaults(True, player_position, look, floating)
     if game_mode is not None:
-        _make_game(game_mode, player_position)
+        _make_game(game_mode, player_position, title or name.replace("_", " "), objective)
     save()
-    out = {"scene": path, "main": False}
+    out = {"scene": path, "main": False, "look": look or "day"}
     if template:
         out["template"] = template
         out["game_mode"] = game_mode.get_path_name().split(".", 1)[0]
     if set_as_main:
+        before = main_level()
         note = set_main(path)
         out["main"] = not note
         if note:
             out["note"] = note
+        elif before and before != path:  # say so: the project now opens this level instead
+            out["replaced_main"] = before
     return out
 
 
-def _make_game(game_mode, player_position) -> None:
+def _make_game(game_mode, player_position, title: str, objective: str) -> None:
     """The level runs ``game_mode`` (World Settings override), has a
-    PlayerStart and a navigation volume playtests route by."""
+    PlayerStart, a navigation volume playtests route by and its game info
+    (title, objective, music)."""
     world().get_world_settings().set_editor_property("default_game_mode", game_mode)
     actors = _sub(unreal.EditorActorSubsystem).get_all_level_actors()
     if not any(isinstance(a, unreal.PlayerStart) for a in actors):
@@ -186,6 +253,11 @@ def _make_game(game_mode, player_position) -> None:
         _spawn(unreal.PlayerStart, start, label="PlayerStart")
     if not any(a.get_actor_label() == NAV_LABEL for a in actors):
         _spawn(unreal.NavMeshBoundsVolume, (0.0, 0.0, 0.0), label=NAV_LABEL)
+    info_class = game.info_class()
+    if info_class is not None and not any(a.get_class() == info_class for a in actors):
+        info = _spawn(info_class, (0.0, 0.0, 0.0), label="GameInfo")
+        info.set_editor_property("Title", title)
+        info.set_editor_property("Objective", objective)
     fit_navigation()
 
 
@@ -389,32 +461,41 @@ def _spawn_package(meshes, at, yaw_deg, instance, folder, parent_actor, animatio
         actor.tags = _actor_tags(asset)
         if isinstance(actor, unreal.StaticMeshActor):
             _set_body(actor, actor.static_mesh_component, asset)
+        elif isinstance(actor, unreal.SkeletalMeshActor) and _meta(asset, "mixar_role") in WALKED_ROLES:
+            actor.skeletal_mesh_component.set_editor_property("can_ever_affect_navigation", False)
         if parent_actor:
             actor.attach_to_actor(parent_actor, "", unreal.AttachmentRule.KEEP_WORLD,
                                   unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, False)
         placed.append(actor)
-        if animation and isinstance(actor, unreal.SkeletalMeshActor):
+        if isinstance(actor, unreal.SkeletalMeshActor) and _meta(asset, "mixar_role") == "player":
+            clip = _player_anim(actor, asset)
+        elif animation and isinstance(actor, unreal.SkeletalMeshActor):
             clip = _play_clip(actor, asset, animation)
     return clip
 
 
-def _outliner_path(actor) -> str:
-    folder = str(actor.get_folder_path() or "")
-    label = actor.get_actor_label()
-    return f"{folder}/{label}" if folder and folder != "None" else label
-
-
-def remove_node(node: str) -> dict:
-    """Remove the actor at ``node`` (an outliner path) or every actor in the
-    folder ``node`` (a placed package)."""
-    reason = refusal()
-    if reason:
-        return {"error": reason}
-    actors = [a for a in _sub(unreal.EditorActorSubsystem).get_all_level_actors()
-              if _outliner_path(a) == node or _outliner_path(a).startswith(node.rstrip("/") + "/")]
-    if not actors:
-        return {"error": f"No actor or folder at {node} (paths come from scene_tree)."}
-    with unreal.ScopedEditorTransaction(f"Mixar: remove {node}"):
-        _sub(unreal.EditorActorSubsystem).destroy_actors(actors)
-    save()
-    return {"removed": len(actors), "scene": level_path()}
+def _player_anim(actor, asset) -> str:
+    """The Mannequin's idle, run and fall clips retargeted onto a player
+    character and handed to the level's game info; the template game plays
+    them as the player moves. The stand-in loops the idle."""
+    info_class = game.info_class()
+    info = next((a for a in _sub(unreal.EditorActorSubsystem).get_all_level_actors()
+                 if info_class is not None and a.get_class() == info_class), None)
+    if info is None:
+        raise ValueError("A player character goes into a level made with a template (new_scene with template).")
+    package = _meta(asset, "mixar_package")
+    folder = f"{MIXAR_FOLDER}/{package}"
+    rtg = f"{folder}/RTG_Mannequin_To_{package}"
+    if not unreal.EditorAssetLibrary.does_asset_exist(rtg):
+        raise ValueError("A player character needs a humanoid rig with a Mannequin bone map; this package has "
+                         "none (rig it as a biped, then export again).")
+    missing = [c for c in PLAYER_CLIPS.values()
+               if not unreal.EditorAssetLibrary.does_asset_exist(retarget.retargeted_path(c, folder, package))]
+    if missing:
+        retarget.retarget_clips(asset, rtg, missing, folder, package)
+    for key, clip in PLAYER_CLIPS.items():
+        anim = unreal.EditorAssetLibrary.load_asset(retarget.retargeted_path(clip, folder, package))
+        if not isinstance(anim, unreal.AnimSequence):
+            raise ValueError(f"Retargeting {clip} onto the character made nothing; read log.")
+        info.set_editor_property(key, anim)
+    return _play_clip(actor, asset, PLAYER_CLIPS["IdleAnim"])

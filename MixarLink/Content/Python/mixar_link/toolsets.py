@@ -35,7 +35,7 @@ MAX_NODES = 2000
 # discovery file publishes these and the Mixar desktop fills them in for
 # arguments a call leaves out.
 ARG_DEFAULTS = {
-    "new_scene": {"template": "", "player_position": []},
+    "new_scene": {"template": "", "player_position": [], "look": "", "title": "", "objective": ""},
     "place": {"name": "", "position": [0.0, 0.0, 0.0], "parent": "", "animation": ""},
     "play": {"scene": "main"},
     "capture": {"source": "game"},
@@ -158,6 +158,10 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             tags = [str(t) for t in actor.tags if str(t).startswith("mixar_")]
             if tags:
                 entry["tags"] = tags
+            if not isinstance(actor, (unreal.StaticMeshActor, unreal.SkeletalMeshActor)):
+                comps = [c.get_name() for c in actor.get_components_by_class(unreal.SceneComponent)]
+                if comps:  # what Component.Property can name
+                    entry["components"] = comps[:12]
             nodes.append(entry)
         return _ok({"scene": _package(world), "nodes": nodes, "total": len(actors),
                     "truncated": len(actors) > len(nodes)})
@@ -181,14 +185,19 @@ class MixarLinkTools(unreal.ToolsetDefinition):
 
     @toolset_registry.tool_call
     @staticmethod
-    def new_scene(name: str, template: str, player_position: list[float], set_main: bool = True,
-                  with_defaults: bool = True, overwrite: bool = False, ground: bool = False) -> str:
+    def new_scene(name: str, template: str, player_position: list[float], look: str, title: str, objective: str,
+                  set_main: bool = True, with_defaults: bool = True, overwrite: bool = False, ground: bool = False,
+                  floating: bool = False) -> str:
         """Makes the level /Game/Mixar/Levels/<name> and opens it.
 
         Args:
             name: Letters, digits and _.
             set_main: Make it the project's main level (owned projects only).
-            with_defaults: Add a sun, sky, fog and a PlayerStart.
+            with_defaults: Add a sun, sky, clouds, fog, post process and a PlayerStart.
+            look: The light: day (default), sunset, dawn, night or overcast.
+            floating: Islands in the sky: the ground and the cloud layer sink below the level.
+            title: The template game's title card (default: the level's name).
+            objective: The line under the title ("Collect the 5 sun crystals").
             overwrite: Replace an existing level of that name.
             template: A playable game around the level: third_person, top_down
                 or platformer (the BP_MixarGameMode rules: pickups open doors, a
@@ -197,14 +206,17 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             player_position: Where the PlayerStart goes (Blender frame).
 
         Returns:
-            JSON: {"ok", "data": {scene, main}}.
+            JSON: {"ok", "data": {scene, main, look, replaced_main?}}.
         """
         if template and template not in game_spec.TEMPLATES:
             return _err(f"template must be one of {', '.join(game_spec.TEMPLATES)}.")
         if not name or not all(c.isalnum() or c == "_" for c in name) or len(name) > 64:
             return _err("name must be letters, digits and _ (at most 64).")
+        if look and look not in level.LOOKS:
+            return _err(f"look must be one of {', '.join(level.LOOKS)}.")
         return _reply(level.new_scene(name, set_main, with_defaults, overwrite, ground,
-                                      list(player_position) if player_position else None, template or ""))
+                                      list(player_position) if player_position else None, template or "",
+                                      look or "", bool(floating), title or "", objective or ""))
 
     @toolset_registry.tool_call
     @staticmethod
@@ -294,8 +306,10 @@ class MixarLinkTools(unreal.ToolsetDefinition):
 
         Args:
             node: A scene_tree path or an actor label.
-            property: position / yaw_deg (Blender frame), scale, label, hidden, tags, or
-                any property name (Unreal units), a Blueprint variable included.
+            property: position / yaw_deg (Blender frame), rotation ([roll, pitch, yaw]),
+                scale, label, hidden, tags, or any property name (Unreal units), a
+                Blueprint variable included; a name the actor lacks is looked for on
+                its components (intensity, light_color …); Component.Property names one.
             value: The value, JSON-encoded.
 
         Returns:

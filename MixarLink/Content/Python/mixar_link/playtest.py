@@ -2,13 +2,22 @@
 
 The same steps as Mixar Link for Godot: ``hold`` / ``press`` an input action,
 ``wait``, ``walk_to`` a Blender-frame point, ``prove_loop`` (every pickup,
-nearest first, then the goal), ``inspect`` an actor's live values, ``state``.
+nearest first, then the goal), ``inspect`` an actor's live values (its own or
+a component's: ``LightComponent.Intensity``), ``state``.
 They run in a level made with a template: its GameMode
 (``BP_MixarGameMode``) holds the state and injects input through Enhanced
 Input (``MixarInject``), so the game sees the same actions a player's keys
 make. ``walk_to`` steers the player with movement input along a path over the
 level's navigation mesh (``MixarNavigation``, rebuilt as doors open), jumps
-once when blocked, and reports reached / stuck / timed_out / no_path.
+once when blocked, and reports reached / stuck / timed_out / no_path. A path
+that ends short is asked for again for a few seconds before ``no_path`` (a
+moving hazard or an opening door changes the navigation mesh for a moment),
+and a death mid-walk routes again from the respawn point.
+
+A step that fails is reported and the next one still runs; only a game that
+stopped or lost its player ends the run. The result says how the game stood
+when the run began (``fresh_start``): a win counts as a clean proof only from
+a fresh start by ``prove_loop`` (``proof``).
 
 A run is a generator advanced once per editor tick (``play.wait``), so the
 game keeps running between steps.
@@ -20,11 +29,12 @@ import time
 
 import unreal
 
-from . import frames, game, play
+from . import frames, game, nodes, play
 
 REACHED_M = 0.6
 WAYPOINT_M = 0.5
 STALL_S = 1.5
+NO_PATH_RETRY_S = 3.0
 RUN_TIMEOUT_S = 290.0
 # Godot's action names on the third-person template's Enhanced Input actions
 # (IA_Move is X right / Y forward; IA_Look X turns the camera).
@@ -125,6 +135,7 @@ class _Run:
     # -- steps --------------------------------------------------------------
 
     def steps(self, steps):
+        start = self.state()
         for step in steps:
             if not isinstance(step, dict):
                 result = {"error": "a step must be an object"}
@@ -149,9 +160,13 @@ class _Run:
             result["step"] = step
             result["state"] = self.state()
             self.results.append(result)
-            if "error" in result:
+            if result.get("fatal"):
                 break
-        return {"steps": self.results, "final_state": self.state()}
+        out = {"steps": self.results, "final_state": self.state(), "start_state": start,
+               "fresh_start": not start.get("collected") and not start.get("deaths") and not start.get("won"),
+               "errors": sum(1 for r in self.results if "error" in r)}
+        out["proof"] = _proof(out)
+        return out
 
     def hold(self, name: str, seconds: float):
         resolved = _resolve(name, self.assets)
@@ -167,19 +182,31 @@ class _Run:
         yield
         return {}
 
+    def _route(self, player, target):
+        """(route, routed) to ``target`` over the navigation mesh, or None when
+        no path reaches it for NO_PATH_RETRY_S. No mesh at all: straight."""
+        deadline = time.time() + NO_PATH_RETRY_S
+        while True:
+            path = unreal.NavigationSystemV1.find_path_to_location_synchronously(
+                self.world, player.get_actor_location(), target)
+            points = list(path.path_points) if path else []
+            if not points:
+                return [target], False
+            if _flat(points[-1], target) <= 1.0:
+                return points[1:] + [target], True
+            if time.time() > deadline:  # the path still ends short: nothing connects
+                return None
+            yield
+
     def walk_to(self, target, timeout: float):
         player = _player(self.world)
         if player is None:
-            return {"error": "the game has no player character"}
-        route, routed = [target], False
-        path = unreal.NavigationSystemV1.find_path_to_location_synchronously(
-            self.world, player.get_actor_location(), target)
-        points = list(path.path_points) if path else []
-        if points:
-            if _flat(points[-1], target) > 1.0:  # the path ends short: nothing connects
-                return {"reached": False, "no_path": True,
-                        "distance_m": round(_flat(player.get_actor_location(), target), 2), "seconds": 0.0}
-            route, routed = points[1:] + [target], True
+            return {"error": "the game has no player character", "fatal": True}
+        found = yield from self._route(player, target)
+        if found is None:
+            return {"reached": False, "no_path": True,
+                    "distance_m": round(_flat(player.get_actor_location(), target), 2), "seconds": 0.0}
+        route, routed = found
         t0 = time.time()
         best, best_at, jumped, leg = float("inf"), t0, False, 0
         deaths_at_start = self._deaths()
@@ -188,10 +215,15 @@ class _Run:
         while True:
             yield
             if not unreal.SystemLibrary.is_valid(player):
-                return {"error": "the player was removed"}
+                return {"error": "the player was removed", "fatal": True}
             deaths = self._deaths()
             if deaths > seen_deaths:  # killed and respawned: the walk starts over from there
                 seen_deaths = deaths
+                found = yield from self._route(player, target)
+                if found is None:
+                    result = {"reached": False, "no_path": True}
+                    break
+                route, routed = found
                 best, best_at, jumped, leg = float("inf"), time.time(), False, 0
             here = player.get_actor_location()
             left = _flat(here, target)
@@ -232,26 +264,37 @@ class _Run:
             return 0
 
     def prove_loop(self, timeout_each: float):
+        """Every pickup (nearest first, a second try for any missed once the
+        rest are in), then the goal."""
         player = _player(self.world)
         if player is None:
-            return {"error": "the game has no player character"}
+            return {"error": "the game has no player character", "fatal": True}
+        t0, deaths0 = time.time(), self._deaths()
         visits, unreached = [], []
-        remaining = list(unreal.GameplayStatics.get_all_actors_with_tag(self.world, "mixar_role=pickup"))
-        while True:
-            remaining = [a for a in remaining
-                         if unreal.SystemLibrary.is_valid(a) and a.get_actor_label() not in unreached]
-            if not remaining:
+        pickups = list(unreal.GameplayStatics.get_all_actors_with_tag(self.world, "mixar_role=pickup"))
+        for attempt in (1, 2):
+            missed = []
+            remaining = list(pickups)
+            while True:
+                remaining = [a for a in remaining if unreal.SystemLibrary.is_valid(a)
+                             and a.get_actor_label() not in missed]
+                if not remaining:
+                    break
+                here = player.get_actor_location()
+                remaining.sort(key=lambda a: _flat(here, _center(a)))
+                target = remaining[0]
+                name = target.get_actor_label()
+                visit = yield from self.walk_to(_center(target), timeout_each)
+                visit["target"] = name
+                visit["collected"] = not unreal.SystemLibrary.is_valid(target)
+                if attempt == 2:
+                    visit["retry"] = True
+                visits.append(visit)
+                if not visit["collected"]:
+                    missed.append(name)
+            unreached = missed
+            if not missed:
                 break
-            here = player.get_actor_location()
-            remaining.sort(key=lambda a: _flat(here, _center(a)))
-            target = remaining[0]
-            name = target.get_actor_label()
-            visit = yield from self.walk_to(_center(target), timeout_each)
-            visit["target"] = name
-            visit["collected"] = not unreal.SystemLibrary.is_valid(target)
-            visits.append(visit)
-            if not visit["collected"]:
-                unreached.append(name)
         goals = list(unreal.GameplayStatics.get_all_actors_with_tag(self.world, "mixar_role=goal"))
         if not goals:
             return {"visits": visits, "unreached": unreached, "error": "the level has no goal (mixar_role goal)"}
@@ -263,7 +306,9 @@ class _Run:
         if not visit.get("reached"):
             unreached.append(goal.get_actor_label())
         yield from _sleep(0.2)
-        return {"visits": visits, "unreached": unreached, "won": bool(self.state().get("won"))}
+        won = bool(self.state().get("won"))
+        return {"visits": visits, "unreached": unreached, "won": won, "deaths": self._deaths() - deaths0,
+                "seconds": round(time.time() - t0, 1), "clean": won and not unreached}
 
     def inspect(self, spec) -> dict:
         if not isinstance(spec, dict) or not spec.get("node"):
@@ -303,6 +348,17 @@ class _Run:
         return out
 
 
+def _proof(out: dict) -> str:
+    """How far the run proves the game winnable: ``prove_loop`` from a fresh
+    start, a win by other steps (hand-picked routes) or none."""
+    if not out["final_state"].get("won"):
+        return "not_won"
+    loops = [r for r in out["steps"] if "prove_loop" in (r.get("step") or {})]
+    if out["fresh_start"] and any(r.get("won") for r in loops):
+        return "prove_loop_fresh"
+    return "won_by_steps" if out["fresh_start"] else "won_not_fresh"
+
+
 def _clamp(value, lo: float, hi: float) -> float:
     try:
         return max(lo, min(float(value), hi))
@@ -338,8 +394,9 @@ def _read(actor, key: str):
         r = actor.get_actor_rotation()
         return [round(r.roll, 2), round(r.pitch, 2), round(r.yaw, 2)], False
     if key == "hidden":
-        return bool(actor.is_hidden()), False
-    return _plain(actor.get_editor_property(key)), False
+        return bool(actor.get_editor_property("hidden")), False
+    obj, name = nodes._target(actor, key)  # Component.Property, or a component's own
+    return _plain(obj.get_editor_property(name)), False
 
 
 def _plain(value):

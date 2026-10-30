@@ -4,11 +4,16 @@
 ``TriggerBox``, ``/Script/Engine.TextRenderActor`` …) or of a Blueprint the
 agent made under /Game/Mixar. ``set_property`` sets one property of an actor
 or of one of its components (``Component.Property``). ``position`` and
-``yaw_deg`` are Blender's frame, like ``place``; every other value is
-Unreal's own (centimetres, degrees, Z up): a list becomes the property's
-vector, rotator ([roll, pitch, yaw], the Details panel's X Y Z) or colour; an
-asset or class path loads it; an enum takes its name. Both are undoable and
-save the level, and both refuse levels outside /Game/Mixar in plugin mode.
+``yaw_deg`` are Blender's frame, like ``place``; ``rotation`` is the actor's
+[roll, pitch, yaw]; every other value is Unreal's own (centimetres, degrees,
+Z up): a list becomes the property's vector, rotator ([roll, pitch, yaw], the
+Details panel's X Y Z) or colour; an asset or class path loads it; an enum
+takes its name. A plain name the actor lacks is looked for on its
+components (``intensity`` on a light reaches its LightComponent; ``color``
+reads as ``light_color`` there), and a component is found by name or by
+class, a base class included (``LightComponent`` finds a
+DirectionalLightComponent). Both are undoable and save the level, and both
+refuse levels outside /Game/Mixar in plugin mode.
 """
 
 import json
@@ -72,19 +77,58 @@ def add_node(type_name: str, name: str, parent: str, position) -> dict:
     return {"node": level._outliner_path(actor), "type": cls.get_name(), "scene": level.level_path()}
 
 
+# Names agents reach for that a component spells another way.
+ALIASES = {"color": ("light_color",), "colour": ("light_color",), "brightness": ("intensity",)}
+
+
+def _components(actor) -> list:
+    return list(actor.get_components_by_class(unreal.ActorComponent))
+
+
+def _is_a(component, class_name: str) -> bool:
+    py = getattr(unreal, class_name, None)
+    if not (isinstance(py, type) and hasattr(py, "static_class")):
+        return False
+    return unreal.MathLibrary.class_is_child_of(component.get_class(), py.static_class())
+
+
+def _has(obj, name: str) -> bool:
+    try:
+        obj.get_editor_property(name)
+    except Exception:  # noqa: BLE001 - Unreal raises for a property it has not got
+        return False
+    return True
+
+
 def _target(actor, prop: str):
-    """(object, property name): ``Component.Property`` reaches a component."""
+    """(object, property name): ``Component.Property`` reaches a component; a
+    name the actor lacks is looked for on its components (root first)."""
     if "." not in prop:
-        return actor, prop
+        if _has(actor, prop):
+            return actor, prop
+        root = actor.get_editor_property("root_component")
+        comps = sorted(_components(actor), key=lambda c: c != root)
+        for name in (prop, *ALIASES.get(prop.lower(), ())):
+            for comp in comps:
+                if _has(comp, name):
+                    return comp, name
+        raise LookupError(f"neither {actor.get_actor_label()} nor its components "
+                          f"({', '.join(c.get_name() for c in comps)}) have {prop}")
     comp_name, prop = prop.split(".", 1)
-    comps = list(actor.get_components_by_class(unreal.ActorComponent))
-    # By name, else by class: "StaticMeshComponent" finds StaticMeshComponent0.
-    for match in (lambda c: c.get_name() == comp_name, lambda c: c.get_class().get_name() == comp_name):
+    comps = _components(actor)
+    # By name, else by class or a base class: "StaticMeshComponent" finds
+    # StaticMeshComponent0, "LightComponent" a DirectionalLightComponent.
+    for match in (lambda c: c.get_name() == comp_name, lambda c: c.get_class().get_name() == comp_name,
+                  lambda c: _is_a(c, comp_name)):
         found = [c for c in comps if match(c)]
         if found:
+            if not _has(found[0], prop):
+                alias = next((a for a in ALIASES.get(prop.lower(), ()) if _has(found[0], a)), None)
+                if alias:
+                    return found[0], alias
             return found[0], prop
     raise LookupError(f"{actor.get_actor_label()} has no component {comp_name} "
-                      f"(it has: {', '.join(c.get_name() for c in actor.get_components_by_class(unreal.ActorComponent))})")
+                      f"(it has: {', '.join(c.get_name() for c in comps)})")
 
 
 def _convert(current, value):
@@ -132,6 +176,7 @@ def set_property(node: str, prop: str, value_json: str) -> dict:
         value = json.loads(value_json) if value_json else None
     except ValueError:
         value = value_json
+    obj, name = actor, prop
     with unreal.ScopedEditorTransaction(f"Mixar: set {node} {prop}"):
         actor.modify()
         try:
@@ -141,6 +186,9 @@ def set_property(node: str, prop: str, value_json: str) -> dict:
                 r = actor.get_actor_rotation()
                 actor.set_actor_rotation(unreal.Rotator(roll=r.roll, pitch=r.pitch,
                                                         yaw=frames.yaw_from_blender(float(value))), True)
+            elif prop == "rotation":
+                roll, pitch, yaw = [float(v) for v in value]
+                actor.set_actor_rotation(unreal.Rotator(roll=roll, pitch=pitch, yaw=yaw), True)
             elif prop == "scale":
                 actor.set_actor_scale3d(unreal.Vector(*([float(value)] * 3 if not isinstance(value, list)
                                                        else [float(v) for v in value])))
@@ -153,8 +201,12 @@ def set_property(node: str, prop: str, value_json: str) -> dict:
             else:
                 obj, name = _target(actor, prop)
                 current = obj.get_editor_property(name)
+                obj.modify()
                 obj.set_editor_property(name, _convert(current, value))
         except Exception as exc:  # noqa: BLE001 - the reason goes back to the agent
             return {"error": f"Could not set {prop} on {node}: {exc}"}
     level.save()
-    return {"node": level._outliner_path(actor), "property": prop, "scene": level.level_path()}
+    out = {"node": level._outliner_path(actor), "property": prop, "scene": level.level_path()}
+    if prop not in ("position", "yaw_deg", "rotation", "scale", "label", "hidden", "tags") and obj is not actor:
+        out["set_on"] = f"{obj.get_name()}.{name}"
+    return out
