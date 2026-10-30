@@ -13,6 +13,8 @@ by the ``mixar_role`` tags ``place`` puts on actors —
   axis, slide_* moves it its own length plus 25 cm);
 - ``goal``: wins once the doors are open;
 - ``hazard`` / ``enemy``: costs a life (respawn); with slide_* it patrols 4 m;
+  an enemy without one chases the player who comes within 9 m of its post,
+  turned to face where it goes, and walks back when they leave;
 - ``checkpoint``: the respawn point from then on;
 - ``spawn``: where the player starts, hidden in game;
 - ``trigger``: reports ``trigger`` when the player walks in.
@@ -209,6 +211,31 @@ GAME_MODE = {
     (:CastFailed
       (CallFunction|MixarAmbience :Music true :Wind true))))
 """),
+        ("MixarStep", [("Mover", ACTOR, True), ("Toward", "Vector", False), ("Speed", "float", False),
+                       ("Delta", "float", False)], [], """
+(fn MixarStep (Mover Toward Speed Delta)
+  ; move flat toward a point, facing the way it goes (its mesh faces Blender -Y)
+  (bind at (Transformation|GetActorLocation :self Mover))
+  (bind flat (Math|Vector|MakeVector :X (- (.x Toward) (.x at)) :Y (- (.y Toward) (.y at)) :Z 0.0))
+  (if (> (Math|Vector|VectorLength flat) 30.0)
+    (bind dir (Math|Vector|Normalize flat))
+    (Transformation|SetActorLocation :self Mover :NewLocation (+ at (* dir (* Speed Delta)))
+                                     :bSweep false :bTeleport true)
+    (Transformation|SetActorRotation :self Mover
+       :NewRotation (Math|Rotator|MakeRotator :Roll 0.0 :Pitch 0.0
+                      :Yaw (- (Math|Trig|Atan2(Degrees) (.y dir) (.x dir)) 90.0))
+       :bTeleportPhysics true)))
+"""),
+        ("MixarChase", [("Enemy", ACTOR, True), ("Home", "Vector", False), ("Delta", "float", False)], [], """
+(fn MixarChase (Enemy Home Delta)
+  (bind target (Transformation|GetActorLocation :self (Variables|Default|GetPlayer)))
+  (bind offset (- target Home))
+  (if (and (not (Variables|Default|GetWon))
+           (< (Math|Vector|VectorLengthXY offset) 900.0))
+    (CallFunction|MixarStep :Mover Enemy :Toward target :Speed 280.0 :Delta Delta)
+    (else
+      (CallFunction|MixarStep :Mover Enemy :Toward Home :Speed 180.0 :Delta Delta))))
+"""),
         ("ReportState", [("Key", "string", False), ("Value", "string", False)], [], """
 (fn ReportState (Key Value)
   (Utilities|Map|Add (Variables|Default|GetState) Key Value))
@@ -344,7 +371,10 @@ GAME_MODE = {
     (if (> (Math|Vector|VectorLength patrol) 0.0)
       (Transformation|SetActorLocation :self hazard
          :NewLocation (+ (Utilities|Array|Get(acopy) (Variables|Default|GetHazardStart) i) (* patrol (* 400.0 swing)))
-         :bSweep false :bTeleport true))
+         :bSweep false :bTeleport true)
+      (elif (Actor|ActorHasTag :self hazard :Tag "mixar_role=enemy")
+        (CallFunction|MixarChase :Enemy hazard :Home (Utilities|Array|Get(acopy) (Variables|Default|GetHazardStart) i)
+                                 :Delta DeltaSeconds)))
     (if (and (not (Variables|Default|GetWon)) (CallFunction|MixarTouches :Target hazard :Grow 15.0))
       (CallFunction|OnMixarEvent :Event "hazard" :Source hazard)))
   (for g (Variables|Default|GetGoals)

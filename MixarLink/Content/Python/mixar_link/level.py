@@ -10,8 +10,9 @@ under the outliner folder ``Mixar/<instance>``. Actors carry the objects'
 tags as actor tags (``mixar_role=pickup`` …), take their mobility and
 physics from ``mixar_body``, and a rigged character can play a Mannequin clip
 (retargeted on first use). A rigged humanoid tagged ``mixar_role=player``
-gets the template's third-person animation retargeted onto it: the template
-game plays as it instead of the Mannequin.
+in a template level gets the Mannequin's idle, run and fall clips retargeted
+onto it: the template game plays as it instead of the Mannequin (elsewhere it
+is an ordinary character).
 
 ``new_scene`` lights a level by ``look`` (day, sunset, dawn, night, overcast):
 sun, sky atmosphere, sky light, volumetric clouds, height fog and a post
@@ -467,22 +468,27 @@ def _spawn_package(meshes, at, yaw_deg, instance, folder, parent_actor, animatio
             actor.attach_to_actor(parent_actor, "", unreal.AttachmentRule.KEEP_WORLD,
                                   unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, False)
         placed.append(actor)
-        if isinstance(actor, unreal.SkeletalMeshActor) and _meta(asset, "mixar_role") == "player":
+        if isinstance(actor, unreal.SkeletalMeshActor) and _meta(asset, "mixar_role") == "player" and _game_info():
             clip = _player_anim(actor, asset)
         elif animation and isinstance(actor, unreal.SkeletalMeshActor):
             clip = _play_clip(actor, asset, animation)
     return clip
 
 
+def _game_info():
+    """The open level's BP_MixarGameInfo (a template level has one), or None."""
+    info_class = game.info_class()
+    if info_class is None:
+        return None
+    return next((a for a in _sub(unreal.EditorActorSubsystem).get_all_level_actors()
+                 if a.get_class() == info_class), None)
+
+
 def _player_anim(actor, asset) -> str:
     """The Mannequin's idle, run and fall clips retargeted onto a player
     character and handed to the level's game info; the template game plays
     them as the player moves. The stand-in loops the idle."""
-    info_class = game.info_class()
-    info = next((a for a in _sub(unreal.EditorActorSubsystem).get_all_level_actors()
-                 if info_class is not None and a.get_class() == info_class), None)
-    if info is None:
-        raise ValueError("A player character goes into a level made with a template (new_scene with template).")
+    info = _game_info()
     package = _meta(asset, "mixar_package")
     folder = f"{MIXAR_FOLDER}/{package}"
     rtg = f"{folder}/RTG_Mannequin_To_{package}"
@@ -499,3 +505,25 @@ def _player_anim(actor, asset) -> str:
             raise ValueError(f"Retargeting {clip} onto the character made nothing; read log.")
         info.set_editor_property(key, anim)
     return _play_clip(actor, asset, PLAYER_CLIPS["IdleAnim"])
+
+
+def _outliner_path(actor) -> str:
+    folder = str(actor.get_folder_path() or "")
+    label = actor.get_actor_label()
+    return f"{folder}/{label}" if folder and folder != "None" else label
+
+
+def remove_node(node: str) -> dict:
+    """Remove the actor at ``node`` (an outliner path) or every actor in the
+    folder ``node`` (a placed package)."""
+    reason = refusal()
+    if reason:
+        return {"error": reason}
+    actors = [a for a in _sub(unreal.EditorActorSubsystem).get_all_level_actors()
+              if _outliner_path(a) == node or _outliner_path(a).startswith(node.rstrip("/") + "/")]
+    if not actors:
+        return {"error": f"No actor or folder at {node} (paths come from scene_tree)."}
+    with unreal.ScopedEditorTransaction(f"Mixar: remove {node}"):
+        _sub(unreal.EditorActorSubsystem).destroy_actors(actors)
+    save()
+    return {"removed": len(actors), "scene": level_path()}

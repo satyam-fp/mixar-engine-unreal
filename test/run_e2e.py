@@ -45,6 +45,8 @@ NEEDED_PLUGINS = ("ModelContextProtocol", "AllToolsets", "PythonScriptPlugin", "
 SECTION = "[/Script/ModelContextProtocolEngine.ModelContextProtocolSettings]"
 THROTTLE = "[/Script/UnrealEd.EditorPerformanceSettings]"
 JOG = "/Game/Characters/Mannequins/Anims/Unarmed/Jog/MF_Unarmed_Jog_Fwd"
+# new_scene's string arguments (the desktop fills these from the discovery file).
+NEW_SCENE = {"template": "", "player_position": [], "look": "", "title": "", "objective": ""}
 PORT = 9880
 
 failures: list[str] = []
@@ -174,10 +176,10 @@ def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
     ok, data = call(mcp, toolset, "import_package", {"source_dir": yard, "folder": "../Escape"})
     check("import_package: a folder is a plain name", not ok, data)
 
-    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EYard", "template": "", "player_position": [-13, 0, 1],
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2EYard", "player_position": [-13, 0, 1],
                                                 "overwrite": True, "ground": True})
     check("new_scene", ok and data.get("scene") == "/Game/Mixar/Levels/E2EYard" and data.get("main"), data)
-    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EYard", "template": "", "player_position": []})
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2EYard"})
     check("new_scene: an existing level needs overwrite", not ok, data)
     ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_PropYard", "name": "", "position": [0, 0, 0],
                                             "parent": "", "animation": ""})
@@ -230,7 +232,7 @@ def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
     ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_PropYard", "name": "", "position": [0, 0, 0],
                                             "parent": "", "animation": ""})
     check("plugin mode: the user's level is not edited", not ok and "plugin mode" in data.get("error", ""), data)
-    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EPlugin", "template": "", "player_position": [],
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2EPlugin",
                                                 "overwrite": True})
     check("plugin mode: Mixar's own level, but not the main level", ok and not data.get("main"), data)
     set_mode(project, "owned")
@@ -256,11 +258,34 @@ def game_checks(mcp, toolset: str, packages: str) -> None:
     course = os.path.join(packages, "UEQA_Course")
     ok, data = call(mcp, toolset, "import_package", {"source_dir": course, "folder": "UEQA_Course"})
     check("import_package: the course", ok and len(data.get("objects") or []) == 11, data.get("objects"))
-    ok, data = call(mcp, toolset, "new_scene", {"name": "E2ECourse", "template": "third_person",
-                                                "player_position": [-6, 0, 1], "overwrite": True})
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2ECourse", "template": "third_person",
+                                                "player_position": [-6, 0, 1], "overwrite": True, "look": "sunset",
+                                                "title": "Course", "objective": "Collect the 3 coins"})
     check("new_scene: third_person template", ok and data.get("game_mode") == "/Game/Mixar/Game/BP_MixarGameMode",
           data)
-    ok, data = call(mcp, toolset, "new_scene", {"name": "E2EBad", "template": "racing", "player_position": []})
+    check("new_scene: a look", data.get("look") == "sunset", data)
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2EBadLook",
+                                                "look": "noon"})
+    check("new_scene: an unknown look is refused", not ok and "sunset" in data.get("error", ""), data)
+    ok, tree = call(mcp, toolset, "scene_tree", {"max_nodes": 500})
+    by_path = {n["path"]: n for n in tree.get("nodes") or []}
+    for label in ("Sun", "Clouds", "PostProcess", "GameInfo", "Fog"):
+        check(f"new_scene: the level has its {label}", label in by_path, sorted(by_path)[:30])
+    check("scene_tree: components of a light", "LightComponent0" in (by_path.get("Sun", {}).get("components") or []),
+          by_path.get("Sun"))
+    ok, data = call(mcp, toolset, "set_property", {"node": "Sun", "property": "intensity", "value": json.dumps(7.5)})
+    check("set_property: a component's property by its plain name",
+          ok and data.get("set_on", "").lower().endswith(".intensity"), data)
+    ok, data = call(mcp, toolset, "set_property", {"node": "Sun", "property": "LightComponent.color",
+                                                   "value": json.dumps([255, 200, 150, 255])})
+    check("set_property: a component by its base class, an alias", ok, data)
+    ok, data = call(mcp, toolset, "set_property", {"node": "Sun", "property": "rotation",
+                                                   "value": json.dumps([0, -20, -60])})
+    check("set_property: rotation on the actor", ok, data)
+    ok, data = call(mcp, toolset, "set_property", {"node": "GameInfo", "property": "Objective",
+                                                   "value": json.dumps("Collect the 3 coins, then the flag")})
+    check("set_property: the level's game info", ok, data)
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2EBad", "template": "racing"})
     check("new_scene: an unknown template is refused", not ok and "third_person" in data.get("error", ""), data)
     ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Course", "name": "", "position": [0, 0, 0],
                                             "parent": "", "animation": ""})
@@ -278,18 +303,28 @@ def game_checks(mcp, toolset: str, packages: str) -> None:
           [start.get("player_position"), moved.get("player_position")])
     check("playtest: press jump leaves the floor", steps[2].get("state", {}).get("on_floor") is False,
           steps[2].get("state"))
-    ok, data = playtest(mcp, toolset, [{"press": "fly"}])
-    check("playtest: an unknown action names the real ones",
-          "move_forward" in ((data.get("steps") or [{}])[0].get("error") or ""), data)
+    ok, data = playtest(mcp, toolset, [{"press": "fly"}, {"wait": 0.1}])
+    steps = data.get("steps") or [{}]
+    check("playtest: an unknown action names the real ones", "move_forward" in (steps[0].get("error") or ""), data)
+    check("playtest: a failed step does not end the run", len(steps) == 2 and data.get("errors") == 1, data)
     ok, data = playtest(mcp, toolset, [{"prove_loop": True}])
     loop = (data.get("steps") or [{}])[0]
     check("playtest: prove_loop wins (pickups, door, goal)", ok and loop.get("won") is True
           and not loop.get("unreached") and data.get("final_state", {}).get("doors_open") is True, loop)
+    check("playtest: a fresh prove_loop win is the proof", data.get("proof") == "prove_loop_fresh"
+          and loop.get("clean") is True, {k: data.get(k) for k in ("proof", "fresh_start")})
+    ok, data = playtest(mcp, toolset, [{"state": True}])
+    check("playtest: a run that begins won is no proof", data.get("proof") == "won_not_fresh"
+          and data.get("fresh_start") is False, {k: data.get(k) for k in ("proof", "fresh_start")})
     ok, data = playtest(mcp, toolset, [{"inspect": {"node": "Door", "properties": ["rotation", "position"]}}])
     door = ((data.get("steps") or [{}])[0].get("values") or {})
     check("playtest: inspect reads the opened door", abs(abs((door.get("rotation") or [0, 0, 0])[2]) - 90) < 1,
           door)
+    ok, data = playtest(mcp, toolset, [{"inspect": {"node": "Sun", "properties": ["LightComponent0.Intensity"]}}])
+    values = (data.get("steps") or [{}])[0].get("values") or {}
+    check("playtest: inspect reads a component's property", values.get("LightComponent0.Intensity") == 7.5, values)
     ok, data = call(mcp, toolset, "stop", {})
+    character_checks(mcp, toolset, packages)
 
     ok, data = call(mcp, toolset, "blueprint", {"action": "docs", "path": "", "graph": "", "code": "", "name": "",
                                                 "type": "", "parent": "", "query": ""})
@@ -340,7 +375,8 @@ def game_checks(mcp, toolset: str, packages: str) -> None:
     check("the agent's Blueprint runs in the game", len(yaws) == 2 and abs(yaws[1] - yaws[0]) > 30, yaws)
     call(mcp, toolset, "stop", {})
 
-    ok, data = call(mcp, toolset, "new_scene", {"name": "E2ETopDown", "template": "top_down", "set_main": False,
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2ETopDown", "template": "top_down",
+                                                "set_main": False,
                                                 "player_position": [-6, 0, 1], "overwrite": True})
     call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Course", "name": "", "position": [0, 0, 0],
                                  "parent": "", "animation": ""})
@@ -351,6 +387,44 @@ def game_checks(mcp, toolset: str, packages: str) -> None:
     b = steps[-1].get("state", {}).get("player_position", [0, 0, 0])
     check("top_down: forward is north (Blender +Y)", b[1] > a[1] + 1.0 and abs(b[0] - a[0]) < 0.3, [a, b])
     call(mcp, toolset, "stop", {})
+
+
+def _with_role(packages: str, name: str, role: str) -> str:
+    """A copy of a package whose objects all take ``role``."""
+    out = os.path.join(tempfile.mkdtemp(prefix="ueqa-role-"), f"{name}_{role}")
+    shutil.copytree(os.path.join(packages, name), out)
+    manifest_path = os.path.join(out, "manifest.json")
+    manifest = json.load(open(manifest_path))
+    for entry in manifest["engine"]["objects"]:
+        entry["role"] = role
+    json.dump(manifest, open(manifest_path, "w"))
+    return out
+
+
+def character_checks(mcp, toolset: str, packages: str) -> None:
+    """0.4: the player plays as a rigged character (Mannequin clips
+    retargeted), and an enemy without a patrol chases the player."""
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Hero", "name": "Player",
+                                            "position": [-8, 2, 0], "parent": "", "animation": ""})
+    check("place: a player character takes its clips", ok and "MM_Idle" in data.get("animation", ""), data)
+    enemy = _with_role(packages, "UEQA_Hero", "enemy")
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": enemy, "folder": "UEQA_Enemy"})
+    ok, data = call(mcp, toolset, "place", {"scene": "/Game/Mixar/UEQA_Enemy", "name": "Chaser",
+                                            "position": [-6, 5, 0], "parent": "", "animation": JOG})
+    check("place: an enemy character", ok, data)
+    call(mcp, toolset, "play", {"scene": "current"})
+    ok, data = playtest(mcp, toolset, [
+        {"inspect": {"node": "BP_ThirdPersonCharacter0", "properties": ["CharacterMesh0.SkeletalMeshAsset"]}},
+        {"inspect": {"node": "Chaser", "properties": ["position"]}}])
+    steps = data.get("steps") or [{}, {}]
+    body = (steps[0].get("values") or {}).get("CharacterMesh0.SkeletalMeshAsset", "")
+    check("the player plays as the character", body.startswith("/Game/Mixar/UEQA_Hero/"), body)
+    at = (steps[1].get("values") or {}).get("position") or [0, 5, 0]
+    check("an enemy chases the player (from 5 m away)", at[1] < 3.0, at)
+    call(mcp, toolset, "stop", {})
+    call(mcp, toolset, "remove_node", {"node": "Mixar/Chaser"})
+    call(mcp, toolset, "remove_node", {"node": "Mixar/Player"})
+    shutil.rmtree(os.path.dirname(enemy), ignore_errors=True)
 
 
 def rig_checks(mcp, toolset: str, packages: str) -> None:
@@ -470,6 +544,10 @@ def main() -> int:
     if sys.platform != "win32":
         check("discovery file removed on close", not os.path.exists(discovery))
     if args.packages:
+        game = os.path.join(os.path.dirname(uproject), "Content", "Mixar", "Game")
+        for asset in ("Audio/S_MixarPickup.uasset", "Audio/S_MixarMusic.uasset", "FX/NS_MixarPickup.uasset",
+                      "BP_MixarGameInfo.uasset"):
+            check(f"template game: {asset}", os.path.isfile(os.path.join(game, asset)))
         changed = [p for p, v in content_snapshot(os.path.dirname(uproject)).items() if before.get(p) != v]
         changed += [p for p in before if not os.path.exists(os.path.join(os.path.dirname(uproject), "Content", p))]
         check("nothing under Content/ outside Content/Mixar changed", not changed, changed[:5])
