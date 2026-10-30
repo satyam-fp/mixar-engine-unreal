@@ -453,6 +453,11 @@ def place(scene: str, name: str, position, yaw_deg: float, parent: str, animatio
 def _spawn_package(meshes, at, yaw_deg, instance, folder, parent_actor, animation, placed) -> str:
     """Spawn one actor per mesh into ``placed``; returns the clip played."""
     clip = ""
+    weapons = [a for a in meshes if _meta(a, "mixar_role") == "weapon"]
+    if len(weapons) > 1 and shooter.is_shooter_level(world()):
+        # every character holds one mesh by its grip (uat4 2026-10-30: a 51-part AK left the game unarmed)
+        raise ValueError(f"the weapon package has {len(weapons)} meshes; the shooter holds ONE: export it "
+                         "again with export_asset(join=True) (origin on the grip) and import that")
     for asset in meshes:
         ox, oy, oz = _origin(asset)
         dx, dy = _turn((ox, oy), yaw_deg)

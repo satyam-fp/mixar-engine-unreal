@@ -89,11 +89,12 @@ VIEW_EYE = (3.0, 14.0, -12.0)
 # bot and the player (each has a copy: a function per Blueprint).
 _GRIP_FN = """
 (fn MixarHold (Body Gun Hand LeftHand Forward)
-  ; the barrel along the aim, turned a little toward the supporting hand
+  ; the barrel along the line from the right hand to the left (the rifle set holds it there, so the
+  ; support hand lands under the handguard), turned a little toward the aim
   (bind hr (Transformation|GetSocketTransform :self Body :InSocketName Hand :TransformSpace "RTS_World"))
   (bind support (Math|Vector|Normalize (- (Transformation|GetSocketLocation :self Body :InSocketName LeftHand)
                                           (.location hr))))
-  (bind barrel (+ (* (Math|Vector|Normalize Forward) 3.0) support))
+  (bind barrel (+ (* (Math|Vector|Normalize Forward) 0.6) support))
   (bind aim (Math|Rotator|MakeRotfromYZ :Y barrel :Z (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 1.0)))
   (bind palm (+ (.location hr) (* (Math|Vector|Normalize barrel) 5.0)))
   (bind held (Math|Transform|MakeTransform :Location palm :Rotation aim
@@ -321,8 +322,9 @@ def bot(assets: dict) -> dict:
                 (Variables|Default|SetGoal (Class|BPMixarShooterGameMode|MixarPatrolPoint :self gm
                                              :Team (Variables|Default|GetTeam)))
                 (Variables|Default|SetHasGoal true))
-              ; planting or defusing: the bot stands still until the GameMode frees it
-              (if (not (Variables|Default|GetBusy))
+              ; planting or defusing, or the freeze time: the bot stands still
+              (if (and (not (Variables|Default|GetBusy))
+                       (>= (Class|BPMixarGameMode|GetClock :self gm) (Class|BPMixarShooterGameMode|GetFreezeUntil :self gm)))
                 (AI|Navigation|MovetoLocation :self ai :Dest (Variables|Default|GetGoal) :AcceptanceRadius 120.0
                   :bStopOnOverlap true :bUsePathfinding true :bProjectDestinationToNavigation true
                   :bCanStrafe false :bAllowPartialPath true)))))
@@ -921,8 +923,8 @@ def game_mode(assets: dict) -> dict:
   (Variables|Default|SetBanner (Utilities|String|Append "Round " (Utilities|String|ToString(Integer)
                                                                    (Variables|Default|GetRoundNo))))
   (Variables|Default|SetBannerUntil (+ (Variables|Default|GetClock) 2.0))
-  ; freeze time, as in CS: the teams hold their spawns while the round starts
-  (Variables|Default|SetFreezeUntil (+ (Variables|Default|GetClock) 3.0))
+  ; freeze time, as in CS (casual): the teams hold still at their spawns while the round starts
+  (Variables|Default|SetFreezeUntil (+ (Variables|Default|GetClock) 6.0))
   {_sound2d(assets, "S_MixarRoundstart", 0.6)}
   (bind info (Utilities|Casting|CastToBP_MixarGameInfo :Object (Variables|Default|GetInfo))
     (:then

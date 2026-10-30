@@ -108,7 +108,7 @@ from `mixar_link/shooter_spec.py`:
 
 - `BP_MixarShooterGameMode` (a child of `BP_MixarGameMode`): CT and T spawn on
   `spawn` markers tagged `mixar_team` `ct` / `t` (extra bots in a grid behind
-  each, on the floor); a 3 s freeze time; rounds end by elimination or time
+  each, on the floor); a 6 s freeze time (bots hold still); rounds end by elimination or time
   (CT), first to `RoundsToWin` (GameInfo; also `BotsPerTeam`, `RoundSeconds`);
   a kill feed. With `bombsite` markers (0.5.1) the rounds are a CS defusal: a T
   carries the bomb to the round's site and plants it (3.2 s), a 40 s fuse beeps
