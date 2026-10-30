@@ -182,11 +182,17 @@ class _Run:
             route, routed = points[1:] + [target], True
         t0 = time.time()
         best, best_at, jumped, leg = float("inf"), t0, False, 0
+        deaths_at_start = self._deaths()
+        seen_deaths = deaths_at_start
         result = {}
         while True:
             yield
             if not unreal.SystemLibrary.is_valid(player):
                 return {"error": "the player was removed"}
+            deaths = self._deaths()
+            if deaths > seen_deaths:  # killed and respawned: the walk starts over from there
+                seen_deaths = deaths
+                best, best_at, jumped, leg = float("inf"), time.time(), False, 0
             here = player.get_actor_location()
             left = _flat(here, target)
             if left < REACHED_M:
@@ -215,7 +221,15 @@ class _Run:
         result["distance_m"] = round(_flat(player.get_actor_location(), target), 2)
         result["seconds"] = round(time.time() - t0, 1)
         result["routed"] = routed
+        if seen_deaths > deaths_at_start:
+            result["died"] = seen_deaths - deaths_at_start
         return result
+
+    def _deaths(self) -> int:
+        try:
+            return int(self.gm.get_editor_property("Deaths"))
+        except Exception:  # noqa: BLE001 - a game mode without the counter
+            return 0
 
     def prove_loop(self, timeout_each: float):
         player = _player(self.world)
