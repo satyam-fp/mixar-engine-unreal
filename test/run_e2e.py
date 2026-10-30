@@ -448,6 +448,11 @@ def shooter_checks(mcp, toolset: str, packages: str) -> None:
         if label.endswith("Model"):
             check(f"place: {label} plays the retargeted rifle set", "MF_Rifle_Idle_ADS" in data.get("animation", ""),
                   data.get("animation"))
+    ok, tree = call(mcp, toolset, "scene_tree", {"max_nodes": 500})
+    sites = [n for n in tree.get("nodes") or [] if n["path"].rsplit("/", 1)[-1] in ("SiteA", "SiteB")]
+    check("place: the package's marker empties (bomb sites) become tagged TargetPoints",
+          len(sites) == 2 and all(n.get("type") == "TargetPoint" and "mixar_role=bombsite" in (n.get("tags") or [])
+                                  for n in sites), sites)
     ok, data = call(mcp, toolset, "play", {"scene": "current"})
     check("play: the shooter", ok and data.get("playing"), data)
     ok, data = playtest(mcp, toolset, [{"inspect": {"node": "BP_MixarBot_C"}}, {"god": True}, {"aim_at": [-17, 0, 1.2]}, {"fire": 1.0},
@@ -470,6 +475,25 @@ def shooter_checks(mcp, toolset: str, packages: str) -> None:
           final.get("alive_ct", 5) + final.get("alive_t", 5) < 10 or final.get("score_ct", 0)
           + final.get("score_t", 0) > 0, final)
     call(mcp, toolset, "stop", {})
+    # defusal: the arena's two bombsite markers; the player, a T, plants on site A and the fuse runs
+    for prop, value in (("PlayerTeam", "t"), ("BotsPerTeam", 2)):
+        call(mcp, toolset, "set_property", {"node": "GameInfo", "property": prop, "value": json.dumps(value)})
+    call(mcp, toolset, "play", {"scene": "current"})
+    ok, data = playtest(mcp, toolset, [{"god": True}, {"wait": 3.5}, {"walk_to": [9, 7, 0], "timeout": 30},
+                                       {"use": 3.8}, {"wait": 2}])
+    steps = data.get("steps") or []
+    start = (steps[0] if steps else {}).get("state", {})
+    check("shooter: bomb sites make a defusal (bomb state reported)", "bomb_planted" in start, start)
+    planted = (steps[3] if len(steps) > 3 else {}).get("state", {})
+    final = data.get("final_state") or {}
+    check("shooter: the player plants the bomb on a site (3.2 s hold)",
+          planted.get("bomb_planted") is True or final.get("bomb_exploded") is True
+          or final.get("score_t", 0) > 0, [planted, final])
+    check("shooter: the fuse burns down", final.get("bomb_planted") is not True
+          or 0 < float(final.get("bomb_left") or 0) < 39.5, final)
+    call(mcp, toolset, "stop", {})
+    for prop, value in (("PlayerTeam", "ct"), ("BotsPerTeam", 5)):
+        call(mcp, toolset, "set_property", {"node": "GameInfo", "property": prop, "value": json.dumps(value)})
     shutil.rmtree(os.path.dirname(enemy), ignore_errors=True)
 
 

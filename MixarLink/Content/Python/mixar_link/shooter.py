@@ -75,6 +75,7 @@ def _clips(asset, package: str) -> list:
     for clip in shooter_spec.ANIMS:
         anim = unreal.load_asset(retarget.retargeted_path(clip, folder, package))
         retarget.lock_root(anim)  # clips retargeted before 0.5 too
+        _full_pose(anim)
         if not isinstance(anim, unreal.AnimSequence):
             raise ValueError(f"The project has no {clip}, or retargeting it made nothing (read log). The shooter "
                              "uses the Third Person template's rifle animations.")
@@ -82,6 +83,16 @@ def _clips(asset, package: str) -> list:
     for anim in out:
         unreal.EditorAssetLibrary.save_loaded_asset(anim, False)
     return out
+
+
+def _full_pose(anim) -> None:
+    """The Mannequin's fire and hit-react clips are additive (a delta over a
+    base pose). A character plays one clip at a time, and an additive clip
+    played alone bends the body out of shape; its raw tracks are the whole
+    pose, so the copy is made a normal clip."""
+    if isinstance(anim, unreal.AnimSequence) and \
+            anim.get_editor_property("additive_anim_type") != unreal.AdditiveAnimationType.AAT_NONE:
+        anim.set_editor_property("additive_anim_type", unreal.AdditiveAnimationType.AAT_NONE)
 
 
 def character(actor, asset, role: str) -> str:

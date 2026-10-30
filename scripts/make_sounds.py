@@ -6,7 +6,7 @@ Everything is made here from sine, noise and simple filters (no samples, so
 nothing to license): a pickup chime, a hurt hit, a stone door grinding open,
 a win fanfare, a checkpoint chime, a wind loop and a calm music loop, and the
 shooter's gunshot, footstep, reload, dry fire, hit marker, headshot and
-round-start beeps. The two
+round-start beeps, and the bomb's beep, plant, defuse and explosion. The two
 loops end where they start, so they repeat without a click. Mono 16-bit WAV;
 the template game imports them into /Game/Mixar/Game/Audio.
 """
@@ -250,6 +250,45 @@ def roundstart() -> np.ndarray:
     return fade(norm(buf, 0.6), 0.0, 0.05)
 
 
+def beep() -> np.ndarray:
+    """The planted bomb's tick: one short high beep (the game repeats it, faster near the end)."""
+    t = t_axis(0.12)
+    tone = np.sin(2 * np.pi * 2350 * t) * np.clip(t / 0.003, 0, 1) * np.clip((0.12 - t) / 0.02, 0, 1)
+    return fade(norm(tone, 0.5), 0.0, 0.02)
+
+
+def plant() -> np.ndarray:
+    """Arming the bomb: keypad presses, then two confirm tones."""
+    buf = np.zeros(int(1.6 * RATE))
+    for i in range(7):
+        place(buf, 0.5 * click(1500 + 120 * (i % 3), 0.02), 0.12 * i)
+    for i, f in enumerate((1200.0, 1800.0)):
+        t = t_axis(0.16)
+        place(buf, 0.45 * np.sin(2 * np.pi * f * t) * np.clip((0.16 - t) / 0.03, 0, 1), 1.0 + 0.2 * i)
+    return fade(norm(buf, 0.6), 0.0, 0.05)
+
+
+def defuse() -> np.ndarray:
+    """Defusing: a run of tool clicks and a wire snip."""
+    buf = np.zeros(int(1.2 * RATE))
+    for i in range(6):
+        place(buf, 0.4 * click(900 + 200 * (i % 2), 0.015), 0.15 * i)
+    t = t_axis(0.08)
+    place(buf, 0.7 * rng.standard_normal(len(t)) * np.exp(-t / 0.01), 1.0)
+    return fade(norm(buf, 0.6), 0.0, 0.05)
+
+
+def explosion() -> np.ndarray:
+    """The bomb going off: a crack, a long low boom and debris."""
+    t = t_axis(3.5)
+    noise = rng.standard_normal(len(t))
+    crack = noise * np.exp(-t / 0.01) * 1.5
+    boom = lowpass(noise, 180) * np.exp(-t / 0.7) * 6.0
+    sub = np.sin(2 * np.pi * (32 + 40 * np.exp(-t / 0.15)) * t) * np.exp(-t / 0.9) * 1.2
+    debris = (lowpass(noise, 2500) - lowpass(noise, 600)) * np.exp(-t / 1.1) * 0.6 * np.clip(t / 0.2, 0, 1)
+    return fade(norm(crack + boom + sub + debris, 0.97), 0.0, 0.6)
+
+
 def write(name: str, samples: np.ndarray) -> None:
     os.makedirs(OUT, exist_ok=True)
     data = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
@@ -263,5 +302,5 @@ def write(name: str, samples: np.ndarray) -> None:
 
 if __name__ == "__main__":
     for fn in (pickup, checkpoint, hurt, door, win, wind, music, gunshot, footstep, reload, dryfire, hitmarker,
-               headshot, roundstart):
+               headshot, roundstart, beep, plant, defuse, explosion):
         write("S_Mixar" + fn.__name__.capitalize(), fn())

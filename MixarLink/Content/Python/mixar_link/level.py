@@ -23,6 +23,7 @@ process (bloom, exposure, grading). ``floating`` sinks the planet's ground and
 the cloud layer under the level, for islands in the sky.
 """
 
+import json
 import math
 import os
 import re
@@ -54,7 +55,8 @@ MOVING_ROLES = {"pickup", "door", "hazard", "enemy"}
 # Roles that never shape the navigation mesh: the player walks through the
 # first ones, and dodges hazards and enemies rather than routing around them
 # (a moving one would carve and re-carve the mesh, and paths would come and go).
-WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn", "hazard", "enemy", "player", "ally", "weapon"}
+WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn", "bombsite", "hazard", "enemy", "player", "ally",
+                "weapon"}
 
 
 def _sub(cls):
@@ -482,7 +484,37 @@ def _spawn_package(meshes, at, yaw_deg, instance, folder, parent_actor, animatio
             clip = _player_anim(actor, asset)
         elif animation and isinstance(actor, unreal.SkeletalMeshActor):
             clip = _play_clip(actor, asset, animation)
+    for asset in meshes:
+        _place_markers(asset, at, yaw_deg, folder, parent_actor, placed)
     return clip
+
+
+def _place_markers(asset, at, yaw_deg, folder, parent_actor, placed) -> None:
+    """The package's markers (tagged empties in Mixar: spawn points, bomb
+    sites …) as TargetPoints carrying their tags, where the map had them."""
+    try:
+        markers = json.loads(_meta(asset, "mixar_markers") or "[]")
+    except ValueError:
+        return
+    package = _meta(asset, "mixar_package")
+    for m in markers:
+        ox, oy, oz = [float(v) for v in (m.get("position") or [0.0, 0.0, 0.0])[:3]]
+        dx, dy = _turn((ox, oy), yaw_deg)
+        location = frames.from_blender([at[0] + dx, at[1] + dy, at[2] + oz])
+        yaw = frames.yaw_from_blender(float(yaw_deg) + float(m.get("yaw_deg") or 0.0))
+        actor = _sub(unreal.EditorActorSubsystem).spawn_actor_from_class(
+            unreal.TargetPoint, unreal.Vector(*location), unreal.Rotator(roll=0.0, pitch=0.0, yaw=yaw))
+        if actor is None:
+            continue
+        actor.set_actor_label(str(m["name"]))
+        actor.set_folder_path(folder)
+        tags = [unreal.Name(f"mixar_package={package}"), unreal.Name(f"mixar_object={m['name']}")]
+        tags += [unreal.Name(f"mixar_{k}={m[k]}") for k in ("role", "team") if m.get(k)]
+        actor.tags = tags
+        if parent_actor:
+            actor.attach_to_actor(parent_actor, "", unreal.AttachmentRule.KEEP_WORLD,
+                                  unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, False)
+        placed.append(actor)
 
 
 def _game_info():

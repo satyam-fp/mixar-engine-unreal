@@ -8,6 +8,7 @@ Writes into <out dir>:
 - ``UEQA_PropYard``: 40 props in a 8 x 5 grid, mixed roles (prop, pickup,
   door with a hinge, hazard, goal), bodies and collision shapes (box, convex,
   mesh, none) — each object keeps its own origin;
+- (``UEQA_Arena`` has two ``bombsite`` empties, A and B, on the CT half, parented to its floor);
 - ``UEQA_Robot``: a mesh on a custom 3-bone rig, exported (as the agent did)
   with only the mesh named — it must still import skinned;
 - ``UEQA_Course``: a small winnable level (coins, a hinged door in the only
@@ -289,6 +290,15 @@ def arena():
         box(f"SpawnCT_{i}", (0.8, 0.8, 0.05), (17.0, y, 0.025),
             {"mixar_role": "spawn", "mixar_team": "ct", "mixar_body": "none", "mixar_collision": "none"},
             (0.2, 0.4, 0.9))
+    # bomb sites as EMPTIES under the floor (how an agent marks them): the manifest carries them as markers
+    floor = bpy.data.objects["Floor"]
+    for name, y in (("SiteA", 7.0), ("SiteB", -7.0)):
+        site = bpy.data.objects.new(name, None)
+        bpy.context.scene.collection.objects.link(site)
+        site.location = (9.0, y, 0.0)
+        site.parent = floor
+        site.matrix_parent_inverse = floor.matrix_world.inverted()
+        site["mixar_role"] = "bombsite"
     result = export_package.export_package(names, fmt="fbx", folder="UEQA_Arena", engine="unreal",
                                            bake_materials=False)
     print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))

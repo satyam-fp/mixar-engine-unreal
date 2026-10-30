@@ -156,6 +156,9 @@ class _Run:
                                                      else 0.1, 0.05, 10.0))
             elif "reload" in step:
                 result = self.flag("ReloadHeld")
+            elif "use" in step:
+                result = yield from self.use(_clamp(step.get("use") if not isinstance(step.get("use"), bool)
+                                                    else 0.5, 0.05, 15.0))
             elif "god" in step:
                 result = self.flag("God", bool(step["god"]))
             elif "aim_at" in step:
@@ -290,6 +293,17 @@ class _Run:
         held = player.get_editor_property("Clock") - clock
         yield
         return {"shots": before - player.get_editor_property("Ammo"), "game_seconds": round(held, 2)}
+
+    def use(self, seconds: float):
+        """Hold use (E) for ``seconds``: plant the bomb as a T, defuse it as a CT."""
+        player = self._shooter()
+        if player is None:
+            return {"error": "use needs a shooter level (new_scene template=shooter)"}
+        player.set_editor_property("UseHeld", True)
+        yield from _sleep(seconds)
+        if unreal.SystemLibrary.is_valid(player):
+            player.set_editor_property("UseHeld", False)
+        return {}
 
     def flag(self, name: str, value: bool = True) -> dict:
         player = self._shooter()

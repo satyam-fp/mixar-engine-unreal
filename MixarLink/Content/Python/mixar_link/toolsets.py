@@ -367,7 +367,8 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             steps: JSON list of steps: {hold, seconds} | {press} | {wait} |
                 {walk_to: [x, y, z] Blender frame, timeout} | {prove_loop: true, timeout}
                 | {inspect: {node, properties}} | {state: true}; shooter: {fire: seconds}
-                | {reload: true} | {aim_at: [x, y, z]} | {god: bool} (the player takes no damage).
+                | {reload: true} | {aim_at: [x, y, z]} | {god: bool} (the player takes no damage)
+                | {use: seconds} (hold E: plant as a T, defuse as a CT).
 
         Returns:
             JSON: {"ok", "data": {steps, final_state}}.

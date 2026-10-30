@@ -107,19 +107,27 @@ written with Epic's Blueprint graph DSL from `mixar_link/game_spec.py`:
 from `mixar_link/shooter_spec.py`:
 
 - `BP_MixarShooterGameMode` (a child of `BP_MixarGameMode`): CT and T spawn on
-  `spawn` markers tagged `mixar_team` `ct` / `t`; rounds end by elimination or
-  time (CT), first to `RoundsToWin` (GameInfo; also `BotsPerTeam`,
-  `RoundSeconds`); a kill feed;
+  `spawn` markers tagged `mixar_team` `ct` / `t` (extra bots in a grid behind
+  each, on the floor); a 3 s freeze time; rounds end by elimination or time
+  (CT), first to `RoundsToWin` (GameInfo; also `BotsPerTeam`, `RoundSeconds`);
+  a kill feed. With `bombsite` markers (0.5.1) the rounds are a CS defusal: a T
+  carries the bomb to the round's site and plants it (3.2 s), a 40 s fuse beeps
+  faster as it burns, a CT bot standing on it out of a fight or the player
+  holding E defuses it (10 s); a blast or a dead CT side is a T win, a defuse,
+  the Ts dead before a plant or the clock running out before one a CT win;
 - `BP_MixarShooterPlayer` (child of the third-person character): first person
   with a view model (the player character's own mesh, head and legs hidden,
   attached to the camera), fire / reload / walk / crouch on the mouse and
   R / Shift / Ctrl, recoil climb with partial recovery, spray and movement
   spread, 30 / 90 ammo, armor, a death camera;
 - `BP_MixarBot`: Characters on the navigation mesh that move toward the enemy
-  spawn or mid, turn on the nearest enemy in sight, react, fire bursts with
-  spread, die with a death clip;
+  spawn or mid (in a defusal: Ts to the site, CTs to hold one, then to the
+  bomb), see in a ~150° field of view, react, settle their aim over about a
+  second, fire bursts that spread as they go on or while moving, drop the rifle
+  and play a death clip; one that falls out of the level dies;
 - `BP_MixarShooterHUD`: crosshair, hit marker, health / armor, ammo, score,
-  round timer, alive counts, kill feed, banners.
+  round timer (the bomb's, in red, once planted), alive counts, kill feed,
+  plant / defuse progress, banners.
 
 Placed packages give the game its art: a rigged humanoid `player` / `ally` /
 `enemy` becomes its team's model (the Mannequin rifle set retargeted onto
@@ -127,7 +135,21 @@ it, root locked), a `weapon` mesh (origin on the grip, barrel toward Blender
 −Y) the rifle everyone holds; both stay as hidden stand-ins. The rifle's hold
 is measured from the live pose each frame (right hand on the grip, barrel
 along the aim), and the view model is placed from the camera so the eyes sit
-at GameInfo `ViewEye`.
+at GameInfo `ViewEye`. The Mannequin's additive clips (fire, hit react) are
+made full-pose copies: a character plays one clip at a time.
+
+A package's tagged EMPTIES (spawn points, bomb sites) have no node in its FBX:
+the exporter lists them as manifest `markers` and `place` puts each in the
+level as a TargetPoint with its tags. A re-import untags meshes the new
+manifest no longer names, so `place` no longer spawns them.
+
+Shooter playtest steps: `{fire: s}` (reports `shots` and `game_seconds`),
+`{reload: true}`, `{aim_at: [x, y, z]}`, `{use: s}` (hold E), `{god: bool}`
+(the player takes no damage); the state adds `round`, `score_ct`, `score_t`,
+`alive_ct`, `alive_t`, `kills`, `health`, `ammo`, `reserve`, `player_dead`
+and, in a defusal, `bomb_planted`, `bomb_planting`, `bomb_left`,
+`bomb_defusing`, `bomb_defused`, `bomb_exploded`, `bomb_site`. Asset-changing
+tools refuse while the game runs.
 
 They are ordinary Blueprints in the project, so a packaged game carries them.
 Other Blueprints talk to the rules through the GameMode's

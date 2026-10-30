@@ -148,9 +148,10 @@ def bot(assets: dict) -> dict:
             ("HitUntil", "float"), ("StepAt", "float"), ("AnimState", "int"), ("Goal", "Vector"),
             ("HasGoal", "bool"), ("HandBone", "name"), ("HeadBone", "name"), ("Engaged", "bool"),
             ("LeftHand", "name"), ("Calibrated", "bool"), ("Frames", "int"), ("SightedAt", "float"),
+            ("Busy", "bool"),
         ],
         "object_variables": [("Target", ACTOR, None), ("Anims", ANIM, "ARRAY")],
-        "components": [("Gun", "StaticMeshComponent")],
+        "components": [("Gun", "StaticMeshComponent"), ("Bomb", "StaticMeshComponent")],
         "functions": [
             ("MixarSetup", [("InTeam", "string", False), ("InName", "string", False)], [], f"""
 (fn MixarSetup (InTeam InName)
@@ -159,6 +160,7 @@ def bot(assets: dict) -> dict:
   (Variables|Default|SetHealth 100.0)
   (Variables|Default|SetArmor 100.0)
   (Variables|Default|SetDead false)
+  (Variables|Default|SetBusy false)
   (Variables|Default|SetBurst 3)
   (Variables|Default|SetAnimState -1)
   ; shots and sight lines are Visibility traces: the body stops them (a Pawn ignores the channel)
@@ -226,6 +228,8 @@ def bot(assets: dict) -> dict:
             ("MixarDie", [("From", ACTOR, True), ("Headshot", "bool", False)], [], f"""
 (fn MixarDie (From Headshot)
   (Variables|Default|SetDead true)
+  ; the rifle falls from the hands (it would stay held out while the body falls)
+  (Rendering|SetVisibility :self (Variables|Default|GetGun) :bNewVisibility false :bPropagateToChildren false)
   (Variables|Default|SetEngaged false)
   (CallFunction|MixarStopAI)
   (Collision|SetCollisionEnabled :self (Variables|Character|GetCapsuleComponent) :NewType "NoCollision")
@@ -234,6 +238,18 @@ def bot(assets: dict) -> dict:
     (:then
       (Class|BPMixarShooterGameMode|MixarKilled :self gm :Victim self :Killer From :Headshot Headshot))
     (:CastFailed)))
+"""),
+            ("MixarDropBomb", [("Where", "Vector", False)], [], """
+(fn MixarDropBomb (Where)
+  ; the planted bomb: this character's Bomb brick, left in the world where it was planted
+  (bind bomb (Variables|Default|GetBomb))
+  (Collision|SetCollisionEnabled :self bomb :NewType "NoCollision")
+  (Components|StaticMesh|SetStaticMesh :self bomb :NewMesh "/Engine/BasicShapes/Cube.Cube")
+  (Transformation|SetAbsolute :self bomb :bNewAbsoluteLocation true :bNewAbsoluteRotation true :bNewAbsoluteScale true)
+  (Transformation|SetWorldScale3D :self bomb :NewScale (Math|Vector|MakeVector :X 0.28 :Y 0.2 :Z 0.09))
+  (Transformation|SetWorldLocation :self bomb :NewLocation (+ Where (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 5.0))
+    :bSweep false :bTeleport true)
+  (Rendering|SetVisibility :self bomb :bNewVisibility true :bPropagateToChildren false))
 """),
             ("MixarHold", _GRIP_PARAMS, [], _GRIP_FN),
             ("MixarStopAI", [], [], """
@@ -270,7 +286,8 @@ def bot(assets: dict) -> dict:
       (:then
         (if (Class|BPMixarShooterGameMode|MixarIsCombatant :self gm :Who actor)
           (bind head (> (.z impact) (+ (.z (Transformation|GetActorLocation :self actor)) 65.0)))
-          {_fx(assets, "NS_MixarBlood", "impact", 0.12)}
+          (if (!= actor (Class|BPMixarShooterGameMode|GetShooter :self gm))
+            {_fx(assets, "NS_MixarBlood", "impact", 0.12)})
           (Class|BPMixarShooterGameMode|MixarDamage :self gm :Victim actor :Amount 27.0 :Headshot head :From self)
           (else
             {_fx(assets, "NS_MixarSparks", "impact", 0.08)})))
@@ -304,9 +321,11 @@ def bot(assets: dict) -> dict:
                 (Variables|Default|SetGoal (Class|BPMixarShooterGameMode|MixarPatrolPoint :self gm
                                              :Team (Variables|Default|GetTeam)))
                 (Variables|Default|SetHasGoal true))
-              (AI|Navigation|MovetoLocation :self ai :Dest (Variables|Default|GetGoal) :AcceptanceRadius 120.0
-                :bStopOnOverlap true :bUsePathfinding true :bProjectDestinationToNavigation true
-                :bCanStrafe false :bAllowPartialPath true))))
+              ; planting or defusing: the bot stands still until the GameMode frees it
+              (if (not (Variables|Default|GetBusy))
+                (AI|Navigation|MovetoLocation :self ai :Dest (Variables|Default|GetGoal) :AcceptanceRadius 120.0
+                  :bStopOnOverlap true :bUsePathfinding true :bProjectDestinationToNavigation true
+                  :bCanStrafe false :bAllowPartialPath true)))))
         (:CastFailed)))
     (:CastFailed)))
 """),
@@ -328,11 +347,15 @@ def bot(assets: dict) -> dict:
   ; measured once the aim pose has played a few frames (at spawn the hands are at rest)
   (Variables|Default|SetFrames (+ (Variables|Default|GetFrames) 1))
   ; re-measured every frame: the hand turns between clips, the rifle keeps pointing where the bot faces
-  (if (and (> (Variables|Default|GetClock) 0.4) (> (Variables|Default|GetFrames) 5))
+  (if (and (and (> (Variables|Default|GetClock) 0.4) (> (Variables|Default|GetFrames) 5))
+           (not (Variables|Default|GetDead)))
     (Variables|Default|SetCalibrated true)
     (CallFunction|MixarHold :Body (Variables|Character|GetMesh) :Gun (Variables|Default|GetGun)
       :Hand (Variables|Default|GetHandBone) :LeftHand (Variables|Default|GetLeftHand)
       :Forward (Transformation|GetActorForwardVector :self self)))
+  ; fell out of the level (a hole, a spawn past the edge): dead, so the round can still end
+  (if (and (not (Variables|Default|GetDead)) (< (.z (Transformation|GetActorLocation :self self)) -5000.0))
+    (CallFunction|MixarDie :From self :Headshot false))
   (if (not (Variables|Default|GetDead))
     (if (> (Variables|Default|GetClock) (Variables|Default|GetThinkAt))
       (Variables|Default|SetThinkAt (+ (Variables|Default|GetClock) 0.2))
@@ -364,7 +387,8 @@ def player(assets: dict) -> dict:
         "parent": PLAYER_PARENT,
         "variables": [
             ("Team", "string"), ("Health", "float"), ("Armor", "float"), ("Ammo", "int"), ("Reserve", "int"),
-            ("Dead", "bool"), ("FireHeld", "bool"), ("ReloadHeld", "bool"), ("God", "bool"), ("ShotAt", "float"),
+            ("Dead", "bool"), ("FireHeld", "bool"), ("ReloadHeld", "bool"), ("God", "bool"), ("UseHeld", "bool"),
+            ("ShotAt", "float"),
             ("ReloadUntil", "float"), ("Reloading", "bool"), ("Spray", "int"), ("RecoilDebt", "float"),
             ("LastFireAt", "float"), ("Clock", "float"), ("AnimState", "int"), ("StepAt", "float"),
             ("ViewKick", "float"), ("ViewBase", "Vector"), ("Spread", "float"),
@@ -374,7 +398,7 @@ def player(assets: dict) -> dict:
         "editable": True,
         "object_variables": [("Anims", ANIM, "ARRAY")],
         "components": [("View", "SkeletalMeshComponent"), ("Gun1P", "StaticMeshComponent"),
-                       ("Gun3P", "StaticMeshComponent")],
+                       ("Gun3P", "StaticMeshComponent"), ("Bomb", "StaticMeshComponent")],
         "functions": [
             ("MixarSetupFP", [], [], f"""
 (fn MixarSetupFP ()
@@ -429,6 +453,18 @@ def player(assets: dict) -> dict:
       (Transformation|AttachComponentToComponent :self gun3 :Parent body :SocketName hand
         :LocationRule "SnapToTarget" :RotationRule "SnapToTarget" :ScaleRule "KeepWorld" :bWeldSimulatedBodies false))
     (:CastFailed)))
+"""),
+            ("MixarDropBomb", [("Where", "Vector", False)], [], """
+(fn MixarDropBomb (Where)
+  ; the planted bomb: this character's Bomb brick, left in the world where it was planted
+  (bind bomb (Variables|Default|GetBomb))
+  (Collision|SetCollisionEnabled :self bomb :NewType "NoCollision")
+  (Components|StaticMesh|SetStaticMesh :self bomb :NewMesh "/Engine/BasicShapes/Cube.Cube")
+  (Transformation|SetAbsolute :self bomb :bNewAbsoluteLocation true :bNewAbsoluteRotation true :bNewAbsoluteScale true)
+  (Transformation|SetWorldScale3D :self bomb :NewScale (Math|Vector|MakeVector :X 0.28 :Y 0.2 :Z 0.09))
+  (Transformation|SetWorldLocation :self bomb :NewLocation (+ Where (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 5.0))
+    :bSweep false :bTeleport true)
+  (Rendering|SetVisibility :self bomb :bNewVisibility true :bPropagateToChildren false))
 """),
             ("MixarHold", _GRIP_PARAMS, [], _GRIP_FN),
             ("MixarCalibrate", [], [], """
@@ -507,6 +543,7 @@ def player(assets: dict) -> dict:
   (Collision|SetCollisionEnabled :self (Variables|Character|GetCapsuleComponent) :NewType "QueryAndPhysics")
   (CallFunction|MixarArm :Length 0.0)
   (Rendering|SetOwnerNoSee :self (Variables|Character|GetMesh) :bNewOwnerNoSee true)
+  (Rendering|SetVisibility :self (Variables|Default|GetBomb) :bNewVisibility false :bPropagateToChildren false)
   ; shown once calibrated (before that the arms are not where the eyes are)
   (Rendering|SetVisibility :self (Variables|Default|GetView) :bNewVisibility (Variables|Default|GetCalibrated)
     :bPropagateToChildren true))
@@ -564,7 +601,8 @@ def player(assets: dict) -> dict:
       (:then
         (if (Class|BPMixarShooterGameMode|MixarIsCombatant :self gm :Who actor)
           (bind head (> (.z impact) (+ (.z (Transformation|GetActorLocation :self actor)) 65.0)))
-          {_fx(assets, "NS_MixarBlood", "impact", 0.12)}
+          (if (!= actor (Class|BPMixarShooterGameMode|GetShooter :self gm))
+            {_fx(assets, "NS_MixarBlood", "impact", 0.12)})
           (Class|BPMixarShooterGameMode|MixarDamage :self gm :Victim actor :Amount 27.0 :Headshot head :From self)
           (else
             {_fx(assets, "NS_MixarSparks", "impact", 0.08)})))
@@ -686,9 +724,14 @@ def game_mode(assets: dict) -> dict:
             ("Feed", "string", "ARRAY"), ("FeedAt", "float", "ARRAY"), ("MatchOver", "bool"),
             ("LastHitAt", "float"), ("LastHeadshotAt", "float"), ("AliveCT", "int"), ("AliveT", "int"),
             ("ReportAt", "float"), ("Range", "float"), ("HasBest", "bool"), ("Tally", "int"),
+            ("BombMode", "bool"), ("Planted", "bool"), ("Planting", "bool"), ("PlantUntil", "float"),
+            ("PlantSpot", "Vector"), ("PlantedAt", "float"), ("BombLeft", "float"), ("BombAt", "Vector"),
+            ("BeepAt", "float"), ("Defusing", "bool"), ("DefuseUntil", "float"), ("Defused", "bool"),
+            ("Exploded", "bool"), ("HasCarrier", "bool"), ("SiteNear", "bool"), ("TargetIndex", "int"),
         ],
         "object_variables": [("Info", ACTOR, None), ("Bots", ACTOR, "ARRAY"), ("CTSpawns", ACTOR, "ARRAY"),
-                             ("TSpawns", ACTOR, "ARRAY"), ("Shooter", CHARACTER, None), ("Best", ACTOR, None)],
+                             ("TSpawns", ACTOR, "ARRAY"), ("Shooter", CHARACTER, None), ("Best", ACTOR, None),
+                             ("Sites", ACTOR, "ARRAY"), ("Carrier", ACTOR, None), ("Defuser", ACTOR, None)],
         "functions": [
             ("MixarIsCombatant", [("Who", ACTOR, True)], [("Result", "bool")], """
 (fn MixarIsCombatant (Who)
@@ -813,6 +856,20 @@ def game_mode(assets: dict) -> dict:
   (bind enemy (CallFunction|MixarSpawnCenter :Team (select (Utilities|String|EqualExactly(String) Team "ct") "t" "ct")))
   (bind home (CallFunction|MixarSpawnCenter :Team Team))
   (bind middle (* (+ enemy home) 0.5))
+  (bind ct (Utilities|String|EqualExactly(String) Team "ct"))
+  (if (Variables|Default|GetBombMode)
+    ; defusal: Ts take the round's site, CTs hold a site; once planted Ts guard it and CTs go for the bomb
+    (bind sites (Variables|Default|GetSites))
+    (bind target (Transformation|GetActorLocation :self (Utilities|Array|Get(acopy) sites (Variables|Default|GetTargetIndex))))
+    (bind held (Transformation|GetActorLocation :self (Utilities|Array|Get(acopy) sites
+                 (Math|Random|RandomIntegerinRange :Min 0 :Max (- (Utilities|Array|Length sites) 1)))))
+    (bind near (Math|Vector|MakeVector :X (Math|Random|RandomFloatinRange :Min -300.0 :Max 300.0)
+                                       :Y (Math|Random|RandomFloatinRange :Min -300.0 :Max 300.0) :Z 0.0))
+    (if (Variables|Default|GetPlanted)
+      (return (select ct (Variables|Default|GetBombAt) (+ (Variables|Default|GetBombAt) (* near 1.5))))
+      (else
+        (return (select ct (+ held (* near 1.3))
+                  (select (< (Math|Random|RandomFloat) 0.85) (+ target near) middle))))))
   (bind toward (select (< (Math|Random|RandomFloat) 0.6) enemy middle))
   (return (+ toward (Math|Vector|MakeVector :X (Math|Random|RandomFloatinRange :Min -900.0 :Max 900.0)
                                             :Y (Math|Random|RandomFloatinRange :Min -900.0 :Max 900.0) :Z 0.0))))
@@ -830,11 +887,18 @@ def game_mode(assets: dict) -> dict:
     (bind slot (+ i First))
     (bind base (select (> (Utilities|Array|Length spots) 0)
                  (Transformation|GetActorLocation :self (Utilities|Array|Get(acopy) spots (Math|Integer|%(Integer) slot n))) home))
-    ; one per spawn point, then lined up behind it (away from the enemy), 1.5 m apart: slot 0 is the player's
-    (bind row (/ slot n))
+    ; one per spawn point, then a 3-wide grid behind it (away from the enemy), 1.1 m apart; slot 0 is the
+    ; player's. A grid spot with no floor under it (outside the map, a hole) falls back to the point itself.
+    (bind k (/ slot n))
+    (bind col (Math|Integer|%(Integer) k 3))
     (bind back (Math|Vector|Normalize (Math|Vector|MakeVector :X (- (.x home) (.x enemy)) :Y (- (.y home) (.y enemy)) :Z 0.0)))
-    (bind at (+ (+ base (* back (* row 150.0)))
-                (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 100.0)))
+    (bind side (Math|Vector|MakeVector :X (- 0.0 (.y back)) :Y (.x back) :Z 0.0))
+    (bind grid (+ base (+ (* back (* (/ k 3) 110.0))
+                          (* side (select (== col 0) 0.0 (select (== col 1) 110.0 -110.0))))))
+    (bind (floorHit onFloor) (Collision|LineTraceByChannel :Start (+ grid (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 120.0))
+                                :End (- grid (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 300.0))
+                                :TraceChannel "Visibility" :bTraceComplex false :bIgnoreSelf true :DrawDebugType "None"))
+    (bind at (+ (select onFloor grid base) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 100.0)))
     (bind spawned (Game|SpawnActorfromClass :Class "{BOT_CLASS}"
                     :SpawnTransform (Math|Transform|MakeTransform :Location at
                                       :Rotation (Math|Rotator|MakeRotator :Roll 0.0 :Pitch 0.0 :Yaw (.yaw facing)))
@@ -868,7 +932,8 @@ def game_mode(assets: dict) -> dict:
       (bind per (Math|Integer|Max(Integer) (Class|BPMixarGameInfo|GetBotsPerTeam :self info) 1))
       (CallFunction|MixarSpawnTeam :Team team :Count (- per 1) :First 1)
       (CallFunction|MixarSpawnTeam :Team other :Count per :First 0)
-      (CallFunction|MixarPlacePlayer :Team team :Other other))
+      (CallFunction|MixarPlacePlayer :Team team :Other other)
+      (CallFunction|MixarBombReset))
     (:CastFailed)))
 """),
             ("MixarPlacePlayer", [("Team", "string", False), ("Other", "string", False)], [], """
@@ -928,6 +993,205 @@ def game_mode(assets: dict) -> dict:
             (Variables|Default|SetLost true)))))
     (:CastFailed)))
 """),
+            ("MixarBombReset", [], [], """
+(fn MixarBombReset ()
+  (Variables|Default|SetPlanted false)
+  (Variables|Default|SetPlanting false)
+  (Variables|Default|SetDefusing false)
+  (Variables|Default|SetDefused false)
+  (Variables|Default|SetExploded false)
+  (Variables|Default|SetHasCarrier false)
+  (if (Variables|Default|GetBombMode)
+    (Variables|Default|SetTargetIndex (Math|Random|RandomIntegerinRange :Min 0
+                                        :Max (- (Utilities|Array|Length (Variables|Default|GetSites)) 1)))
+    (CallFunction|MixarPickCarrier)))
+"""),
+            ("MixarPickCarrier", [], [], """
+(fn MixarPickCarrier ()
+  ; the bomb goes to the player when they are a T, else to the first living T bot
+  (Variables|Default|SetHasCarrier false)
+  (bind me (Variables|Default|GetShooter))
+  (if (and (CallFunction|MixarAlive :Who me)
+           (Utilities|String|EqualExactly(String) (CallFunction|MixarTeamOf :Who me) "t"))
+    (Variables|Default|SetCarrier me)
+    (Variables|Default|SetHasCarrier true)
+    (else
+      (for who (Variables|Default|GetBots)
+        (if (and (not (Variables|Default|GetHasCarrier))
+                 (and (CallFunction|MixarAlive :Who who)
+                      (Utilities|String|EqualExactly(String) (CallFunction|MixarTeamOf :Who who) "t")))
+          (Variables|Default|SetCarrier who)
+          (Variables|Default|SetHasCarrier true))))))
+"""),
+            ("MixarNearSite", [("Where", "Vector", False)], [("Near", "bool")], """
+(fn MixarNearSite (Where)
+  (Variables|Default|SetSiteNear false)
+  (for site (Variables|Default|GetSites)
+    (if (< (Math|Vector|Distance(Vector) Where (Transformation|GetActorLocation :self site)) 400.0)
+      (Variables|Default|SetSiteNear true)))
+  (return (Variables|Default|GetSiteNear)))
+"""),
+            ("MixarEngaged", [("Who", ACTOR, True)], [("Result", "bool")], """
+(fn MixarEngaged (Who)
+  (bind bot (Utilities|Casting|CastToBP_MixarBot :Object Who)
+    (:then
+      (return (Class|BPMixarBot|GetEngaged :self bot)))
+    (:CastFailed
+      (return false))))
+"""),
+            ("MixarHalt", [("Who", ACTOR, True), ("Busy", "bool", False)], [], """
+(fn MixarHalt (Who Busy)
+  (bind bot (Utilities|Casting|CastToBP_MixarBot :Object Who)
+    (:then
+      (Class|BPMixarBot|SetBusy :self bot :Busy Busy)
+      (if Busy
+        (Class|BPMixarBot|MixarStopAI :self bot)))
+    (:CastFailed)))
+"""),
+            ("MixarRegoal", [], [], """
+(fn MixarRegoal ()
+  (for who (Variables|Default|GetBots)
+    (bind bot (Utilities|Casting|CastToBP_MixarBot :Object who)
+      (:then
+        (Class|BPMixarBot|SetHasGoal :self bot :HasGoal false))
+      (:CastFailed))))
+"""),
+            ("MixarUseHeld", [], [("Held", "bool")], """
+(fn MixarUseHeld ()
+  (bind pc (Game|GetPlayerController :PlayerIndex 0))
+  (bind me (Utilities|Casting|CastToBP_MixarShooterPlayer :Object (Variables|Default|GetShooter))
+    (:then
+      (return (and (not (Class|BPMixarShooterPlayer|GetDead :self me))
+                   (or (Class|BPMixarShooterPlayer|GetUseHeld :self me)
+                       (Game|Player|IsInputKeyDown :self pc :Key "E")))))
+    (:CastFailed
+      (return false))))
+"""),
+            ("MixarShowBomb", [], [], """
+(fn MixarShowBomb ()
+  (bind at (Variables|Default|GetBombAt))
+  (bind bot (Utilities|Casting|CastToBP_MixarBot :Object (Variables|Default|GetCarrier))
+    (:then
+      (Class|BPMixarBot|MixarDropBomb :self bot :Where at))
+    (:CastFailed
+      (bind me (Utilities|Casting|CastToBP_MixarShooterPlayer :Object (Variables|Default|GetCarrier))
+        (:then
+          (Class|BPMixarShooterPlayer|MixarDropBomb :self me :Where at))
+        (:CastFailed)))))
+"""),
+            ("MixarPlant", [("Where", "Vector", False)], [], f"""
+(fn MixarPlant (Where)
+  (Variables|Default|SetPlanting false)
+  (Variables|Default|SetPlanted true)
+  (Variables|Default|SetPlantedAt (Variables|Default|GetClock))
+  (Variables|Default|SetBombLeft 40.0)
+  (Variables|Default|SetBeepAt (Variables|Default|GetClock))
+  (Variables|Default|SetBombAt (- Where (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 80.0)))
+  (Variables|Default|SetBanner "The bomb has been planted")
+  (Variables|Default|SetBannerUntil (+ (Variables|Default|GetClock) 3.0))
+  (CallFunction|MixarHalt :Who (Variables|Default|GetCarrier) :Busy false)
+  (CallFunction|MixarShowBomb)
+  {_sound2d(assets, "S_MixarRoundstart", 0.5)}
+  (CallFunction|MixarRegoal))
+"""),
+            ("MixarStartDefuse", [("Who", ACTOR, True)], [], f"""
+(fn MixarStartDefuse (Who)
+  (Variables|Default|SetDefusing true)
+  (Variables|Default|SetDefuser Who)
+  (Variables|Default|SetDefuseUntil (+ (Variables|Default|GetClock) 10.0))
+  (CallFunction|MixarHalt :Who Who :Busy true)
+  {_sound3d(assets, "S_MixarDefuse", "(Variables|Default|GetBombAt)", 0.8)})
+"""),
+            ("MixarExplode", [], [], f"""
+(fn MixarExplode ()
+  (Variables|Default|SetExploded true)
+  (bind at (Variables|Default|GetBombAt))
+  {_fx(assets, "NS_MixarExplosion", "(+ at (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 60.0))", 1.0)}
+  {_sound3d(assets, "S_MixarExplosion", "at", 1.0)}
+  {_sound2d(assets, "S_MixarExplosion", 0.45)}
+  ; everyone near the blast dies; a little further out it hurts
+  (for who (Variables|Default|GetBots)
+    (bind d (Math|Vector|Distance(Vector) at (Transformation|GetActorLocation :self who)))
+    (if (< d 1800.0)
+      (CallFunction|MixarDamage :Victim who :Amount (* 600.0 (- 1.0 (/ d 1800.0))) :Headshot false
+        :From (Variables|Default|GetCarrier))))
+  (bind me (Variables|Default|GetShooter))
+  (bind dm (Math|Vector|Distance(Vector) at (Transformation|GetActorLocation :self me)))
+  (if (< dm 1800.0)
+    (CallFunction|MixarDamage :Victim me :Amount (* 600.0 (- 1.0 (/ dm 1800.0))) :Headshot false
+      :From (Variables|Default|GetCarrier))))
+"""),
+            ("MixarDefuseTick", [("Use", "bool", False)], [], f"""
+(fn MixarDefuseTick (Use)
+  (bind me (Variables|Default|GetShooter))
+  (if (Variables|Default|GetDefusing)
+    (bind who (Variables|Default|GetDefuser))
+    (bind human (== who me))
+    (bind close (< (Math|Vector|VectorLengthXY (- (Transformation|GetActorLocation :self who) (Variables|Default|GetBombAt))) 200.0))
+    (bind keep (and (CallFunction|MixarAlive :Who who) (and close (select human Use (not (CallFunction|MixarEngaged :Who who))))))
+    (if (not keep)
+      (Variables|Default|SetDefusing false)
+      (CallFunction|MixarHalt :Who who :Busy false)
+      (elif (>= (Variables|Default|GetClock) (Variables|Default|GetDefuseUntil))
+        (Variables|Default|SetDefusing false)
+        (Variables|Default|SetDefused true)
+        (CallFunction|MixarHalt :Who who :Busy false)
+        {_sound2d(assets, "S_MixarDefuse", 0.7)}))
+    (else
+      ; the player holding use (E) at the bomb, else a CT bot standing on it out of a fight
+      (if (and Use (and (Utilities|String|EqualExactly(String) (CallFunction|MixarTeamOf :Who me) "ct")
+                        (< (Math|Vector|VectorLengthXY (- (Transformation|GetActorLocation :self me) (Variables|Default|GetBombAt))) 200.0)))
+        (CallFunction|MixarStartDefuse :Who me)
+        (else
+          (for who (Variables|Default|GetBots)
+            (if (and (not (Variables|Default|GetDefusing))
+                     (and (CallFunction|MixarAlive :Who who)
+                          (and (Utilities|String|EqualExactly(String) (CallFunction|MixarTeamOf :Who who) "ct")
+                               (and (not (CallFunction|MixarEngaged :Who who))
+                                    (< (Math|Vector|VectorLengthXY (- (Transformation|GetActorLocation :self who)
+                                                                     (Variables|Default|GetBombAt))) 170.0)))))
+              (CallFunction|MixarStartDefuse :Who who))))))))
+"""),
+            ("MixarBombTick", [], [], f"""
+(fn MixarBombTick ()
+  (bind me (Variables|Default|GetShooter))
+  (bind use (CallFunction|MixarUseHeld))
+  (if (Variables|Default|GetPlanted)
+    (Variables|Default|SetBombLeft (- (+ (Variables|Default|GetPlantedAt) 40.0) (Variables|Default|GetClock)))
+    ; the beep speeds up as the fuse burns down, a red blink with each
+    (if (> (Variables|Default|GetClock) (Variables|Default|GetBeepAt))
+      (bind left (Variables|Default|GetBombLeft))
+      (Variables|Default|SetBeepAt (+ (Variables|Default|GetClock) (select (> left 10.0) 1.0 (select (> left 4.0) 0.5 0.22))))
+      {_sound3d(assets, "S_MixarBeep", "(Variables|Default|GetBombAt)", 0.7)}
+      {_fx(assets, "NS_MixarBlink", "(+ (Variables|Default|GetBombAt) (Math|Vector|MakeVector :X 0.0 :Y 0.0 :Z 10.0))", 1.0)})
+    (if (<= (Variables|Default|GetBombLeft) 0.0)
+      (CallFunction|MixarExplode)
+      (else
+        (CallFunction|MixarDefuseTick :Use use)))
+    (else
+      (if (not (CallFunction|MixarAlive :Who (Variables|Default|GetCarrier)))
+        (CallFunction|MixarPickCarrier))
+      (if (Variables|Default|GetHasCarrier)
+        (bind carrier (Variables|Default|GetCarrier))
+        (bind there (Transformation|GetActorLocation :self carrier))
+        (bind human (== carrier me))
+        ; a bot plants once it reaches a site out of a fight; the player holds use (E) on one
+        (bind wants (and (CallFunction|MixarNearSite :Where there)
+                         (and (> (Variables|Default|GetClock) (Variables|Default|GetFreezeUntil))
+                              (select human use (not (CallFunction|MixarEngaged :Who carrier))))))
+        (if (and wants (not (Variables|Default|GetPlanting)))
+          (Variables|Default|SetPlanting true)
+          (Variables|Default|SetPlantUntil (+ (Variables|Default|GetClock) 3.2))
+          (Variables|Default|SetPlantSpot there)
+          (CallFunction|MixarHalt :Who carrier :Busy true)
+          {_sound3d(assets, "S_MixarPlant", "there", 0.8)})
+        (if (and (Variables|Default|GetPlanting)
+                 (or (not wants) (> (Math|Vector|Distance(Vector) there (Variables|Default|GetPlantSpot)) 80.0)))
+          (Variables|Default|SetPlanting false)
+          (CallFunction|MixarHalt :Who carrier :Busy false))
+        (if (and (Variables|Default|GetPlanting) (>= (Variables|Default|GetClock) (Variables|Default|GetPlantUntil)))
+          (CallFunction|MixarPlant :Where there))))))
+"""),
             ("MixarReport", [], [], """
 (fn MixarReport ()
   (CallFunction|ReportState :Key "round" :Value (Utilities|String|ToString(Integer) (Variables|Default|GetRoundNo)))
@@ -937,6 +1201,14 @@ def game_mode(assets: dict) -> dict:
   (CallFunction|ReportState :Key "alive_t" :Value (Utilities|String|ToString(Integer) (Variables|Default|GetAliveT)))
   (CallFunction|ReportState :Key "kills" :Value (Utilities|String|ToString(Integer) (Variables|Default|GetKills)))
   (CallFunction|ReportState :Key "round_left" :Value (Utilities|String|ToString(Float) (Variables|Default|GetRoundLeft)))
+  (if (Variables|Default|GetBombMode)
+    (CallFunction|ReportState :Key "bomb_planted" :Value (select (Variables|Default|GetPlanted) "true" "false"))
+    (CallFunction|ReportState :Key "bomb_planting" :Value (select (Variables|Default|GetPlanting) "true" "false"))
+    (CallFunction|ReportState :Key "bomb_left" :Value (Utilities|String|ToString(Float) (Variables|Default|GetBombLeft)))
+    (CallFunction|ReportState :Key "bomb_defusing" :Value (select (Variables|Default|GetDefusing) "true" "false"))
+    (CallFunction|ReportState :Key "bomb_defused" :Value (select (Variables|Default|GetDefused) "true" "false"))
+    (CallFunction|ReportState :Key "bomb_exploded" :Value (select (Variables|Default|GetExploded) "true" "false"))
+    (CallFunction|ReportState :Key "bomb_site" :Value (Utilities|String|ToString(Integer) (Variables|Default|GetTargetIndex))))
   (bind me (Utilities|Casting|CastToBP_MixarShooterPlayer :Object (Variables|Default|GetShooter))
     (:then
       (CallFunction|ReportState :Key "health"
@@ -962,6 +1234,12 @@ def game_mode(assets: dict) -> dict:
       (Utilities|Array|Add (Variables|Default|GetTSpawns) spot)
       (else
         (Utilities|Array|Add (Variables|Default|GetCTSpawns) spot))))
+  ; bomb sites make the round a defusal (plant, 40 s fuse, defuse); none = elimination only
+  (for site (Actor|GetAllActorswithTag :Tag "mixar_role=bombsite")
+    (Collision|SetActorEnableCollision :self site :bNewActorEnableCollision false)
+    (Rendering|SetActorHiddenInGame :self site :bNewHidden true)
+    (Utilities|Array|Add (Variables|Default|GetSites) site))
+  (Variables|Default|SetBombMode (> (Utilities|Array|Length (Variables|Default|GetSites)) 0))
   (for stand (Actor|GetAllActorswithTag :Tag "mixar_shooter_standin")
     (Rendering|SetActorHiddenInGame :self stand :bNewHidden true)
     (Collision|SetActorEnableCollision :self stand :bNewActorEnableCollision false))
@@ -980,12 +1258,29 @@ def game_mode(assets: dict) -> dict:
         (Variables|Default|SetRoundLeft (- (Variables|Default|GetRoundLeft) DeltaSeconds))
         (Variables|Default|SetAliveCT (CallFunction|MixarCount :Team "ct"))
         (Variables|Default|SetAliveT (CallFunction|MixarCount :Team "t"))
-        (if (== (Variables|Default|GetAliveT) 0)
-          (CallFunction|MixarEndRound :Winner "ct")
-          (elif (== (Variables|Default|GetAliveCT) 0)
+        (if (Variables|Default|GetBombMode)
+          (CallFunction|MixarBombTick)
+          ; CS defusal: a bomb that blows or a dead CT side is a T win; a defuse, the Ts dead before a plant,
+          ; or the clock running out before a plant is a CT win; once planted only the bomb's clock counts
+          (if (Variables|Default|GetExploded)
             (CallFunction|MixarEndRound :Winner "t")
-            (elif (<= (Variables|Default|GetRoundLeft) 0.0)
-              (CallFunction|MixarEndRound :Winner "ct")))))))
+            (Variables|Default|SetBanner "Target bombed. Terrorists win")
+            (elif (Variables|Default|GetDefused)
+              (CallFunction|MixarEndRound :Winner "ct")
+              (Variables|Default|SetBanner "Bomb defused. Counter-Terrorists win")
+              (elif (== (Variables|Default|GetAliveCT) 0)
+                (CallFunction|MixarEndRound :Winner "t")
+                (elif (and (== (Variables|Default|GetAliveT) 0) (not (Variables|Default|GetPlanted)))
+                  (CallFunction|MixarEndRound :Winner "ct")
+                  (elif (and (<= (Variables|Default|GetRoundLeft) 0.0) (not (Variables|Default|GetPlanted)))
+                    (CallFunction|MixarEndRound :Winner "ct"))))))
+          (else
+            (if (== (Variables|Default|GetAliveT) 0)
+              (CallFunction|MixarEndRound :Winner "ct")
+              (elif (== (Variables|Default|GetAliveCT) 0)
+                (CallFunction|MixarEndRound :Winner "t")
+                (elif (<= (Variables|Default|GetRoundLeft) 0.0)
+                  (CallFunction|MixarEndRound :Winner "ct")))))))))
   (if (> (Variables|Default|GetClock) (Variables|Default|GetReportAt))
     (Variables|Default|SetReportAt (+ (Variables|Default|GetClock) 0.25))
     (CallFunction|MixarReport)))
@@ -1032,10 +1327,25 @@ HUD = {
       {_rect(_PANEL, "(- cx 150.0)", "12.0", "300.0", "58.0")}
       {_text(_INT.format('(Class|BPMixarShooterGameMode|GetScoreCT :self gm)'), "(- cx 128.0)", "20.0", 2.2, _CT)}
       {_text(_INT.format('(Class|BPMixarShooterGameMode|GetScoreT :self gm)'), "(+ cx 104.0)", "20.0", 2.2, _T)}
-      (bind left (Math|Float|Max(Float) 0.0 (Class|BPMixarShooterGameMode|GetRoundLeft :self gm)))
+      ; once the bomb is planted the round clock is the bomb's, in red
+      (bind planted (Class|BPMixarShooterGameMode|GetPlanted :self gm))
+      (bind left (Math|Float|Max(Float) 0.0 (select planted (Class|BPMixarShooterGameMode|GetBombLeft :self gm)
+                                                     (Class|BPMixarShooterGameMode|GetRoundLeft :self gm))))
       (bind timer (CallFunction|MixarClockText :Seconds left))
       (bind (tw th) (HUD|GetTextSize :self self :Text timer :Font "{game_spec.ROBOTO}" :Scale 1.8))
-      {_text("timer", "(- cx (/ tw 2.0))", "22.0", 1.8, _WHITE)}
+      {_text("timer", "(- cx (/ tw 2.0))", "22.0", 1.8, "(select planted " + _rgba(1.0, 0.3, 0.25, 1.0) + " " + _WHITE + ")")}
+      {_rect(_PANEL, "(- cx 150.0)", "70.0", "300.0", "26.0")}
+      (if planted
+        {_text('"C4"', "(- (- cx (/ tw 2.0)) 34.0)", "28.0", 1.1, _rgba(1.0, 0.3, 0.25, 1.0))})
+      (bind bar (select (Class|BPMixarShooterGameMode|GetDefusing :self gm)
+                  (- 1.0 (/ (- (Class|BPMixarShooterGameMode|GetDefuseUntil :self gm) clock) 10.0))
+                  (select (Class|BPMixarShooterGameMode|GetPlanting :self gm)
+                    (- 1.0 (/ (- (Class|BPMixarShooterGameMode|GetPlantUntil :self gm) clock) 3.2)) -1.0)))
+      (if (>= bar 0.0)
+        (bind what (select (Class|BPMixarShooterGameMode|GetDefusing :self gm) "DEFUSING" "PLANTING"))
+        {_rect(_PANEL, "(- cx 160.0)", "(* SizeY 0.62)", "320.0", "40.0")}
+        {_rect(_rgba(1.0, 0.75, 0.25, 0.9), "(- cx 150.0)", "(+ (* SizeY 0.62) 26.0)", "(* 300.0 (Math|Float|Min(Float) bar 1.0))", "8.0")}
+        {_text("what", "(- cx 150.0)", "(+ (* SizeY 0.62) 3.0)", 1.0, _WHITE)})
       {_text('(Utilities|String|Append "CT alive " ' + _INT.format('(Class|BPMixarShooterGameMode|GetAliveCT :self gm)') + ')', "(- cx 146.0)", "74.0", 1.0, _CT)}
       {_text('(Utilities|String|Append "T alive " ' + _INT.format('(Class|BPMixarShooterGameMode|GetAliveT :self gm)') + ')', "(+ cx 62.0)", "74.0", 1.0, _T)}
       (bind feed (Class|BPMixarShooterGameMode|GetFeed :self gm))

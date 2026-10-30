@@ -120,6 +120,20 @@ def _origin(entry: dict) -> str:
     return ",".join(f"{float(v):.4f}" for v in origin[:3])
 
 
+def _retire_stale(dest: str, current: set) -> None:
+    """A re-import keeps the folder's older meshes on disk (a level may still
+    use them); one the new manifest no longer names loses its package tag, so
+    place no longer spawns it (a box bomb site lingered beside its marker)."""
+    for asset_path in unreal.EditorAssetLibrary.list_assets(dest, recursive=False):
+        asset = unreal.EditorAssetLibrary.load_asset(str(asset_path).split(".", 1)[0])
+        if not isinstance(asset, (unreal.StaticMesh, unreal.SkeletalMesh)):
+            continue
+        if unreal.EditorAssetLibrary.get_metadata_tag(asset, "mixar_package") and \
+                unreal.EditorAssetLibrary.get_metadata_tag(asset, "mixar_object") not in current:
+            unreal.EditorAssetLibrary.remove_metadata_tag(asset, "mixar_package")
+            unreal.EditorAssetLibrary.save_loaded_asset(asset, False)
+
+
 def import_package(source_dir: str, folder: str) -> dict:
     """Import the package at ``source_dir`` as ``/Game/Mixar/<folder>``."""
     if not SAFE_NAME.match(folder or ""):
@@ -150,13 +164,15 @@ def import_package(source_dir: str, folder: str) -> dict:
     objects, missing, hulls, complex_simple = [], [], 0, 0
     entries = [e for e in engine.get("objects") or [] if isinstance(e, dict) and e.get("name")]
     for entry in entries:
-        asset = next(iter(meshes.values())) if skeletal and len(meshes) == 1 else _asset_for(entry["name"], meshes)
+        # one mesh for one object (a rigged character, or a joined export Unreal named after the file)
+        single = len(meshes) == 1 and (skeletal or len(entries) == 1)
+        asset = next(iter(meshes.values())) if single else _asset_for(entry["name"], meshes)
         if asset is None:
             missing.append(entry["name"])
             continue
         collision = entry.get("collision") or {}
         tags = {"mixar_package": name, "mixar_object": entry["name"], "mixar_origin": _origin(entry),
-                "mixar_collision": collision.get("shape") or "none"}
+                "mixar_collision": collision.get("shape") or "none", "mixar_markers": ""}
         tags.update({f"mixar_{k}": entry[k] for k in TAG_KEYS if entry.get(k)})
         _tag(asset, tags)
         if isinstance(asset, unreal.StaticMesh):
@@ -174,11 +190,19 @@ def import_package(source_dir: str, folder: str) -> dict:
         return {"error": f"Unreal built {made} from the package, but none of it matches the package's "
                          f"objects ({', '.join(missing)}); nothing can be placed. Read log for the importer's "
                          f"messages."}
+    _retire_stale(dest, set(objects))
+    markers = [m for m in engine.get("markers") or [] if isinstance(m, dict) and m.get("name") and m.get("role")]
+    if objects:
+        # spawn points, bomb sites … (empties: the FBX has no node for them); place puts each in the level
+        _tag(meshes.get(objects[0]) or _asset_for(objects[0], meshes) or next(iter(meshes.values())),
+             {"mixar_markers": json.dumps(markers)})
     out = {"folder": name, "main_scene": dest, "objects": objects, "meshes": len(meshes),
            "collision": {"convex_hulls": hulls, "complex_as_simple": complex_simple},
            "issues": list(engine.get("issues") or [])}
     if missing:
         out["missing"] = missing
+    if markers:
+        out["markers"] = [f"{m['name']} ({m['role']}{'/' + m['team'] if m.get('team') else ''})" for m in markers]
     anims = [p for p in paths if isinstance(loaded.get(p.rsplit("/", 1)[-1]), unreal.AnimSequence)]
     if anims:
         out["animations"] = anims

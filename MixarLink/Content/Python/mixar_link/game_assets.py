@@ -22,7 +22,7 @@ AUDIO = f"{MIXAR_FOLDER}/Game/Audio"
 FX = f"{MIXAR_FOLDER}/Game/FX"
 SOUNDS = ("S_MixarPickup", "S_MixarCheckpoint", "S_MixarHurt", "S_MixarDoor", "S_MixarWin", "S_MixarWind",
           "S_MixarMusic", "S_MixarGunshot", "S_MixarFootstep", "S_MixarReload", "S_MixarDryfire", "S_MixarHitmarker",
-          "S_MixarHeadshot", "S_MixarRoundstart")
+          "S_MixarHeadshot", "S_MixarRoundstart", "S_MixarBeep", "S_MixarPlant", "S_MixarDefuse", "S_MixarExplosion")
 # Heard in the world (bots' shots and steps): fades with distance, panned.
 ATTENUATION = "SA_MixarWorld"
 LOOPING = {"S_MixarWind", "S_MixarMusic"}
@@ -48,6 +48,8 @@ EFFECTS = {
     "NS_MixarFlash": ("RadialBurst", (18.0, 9.0, 2.5), (_BURST,), _RIBBONS, _sized((5.0, 12.0), (0.03, 0.06))),
     "NS_MixarSparks": ("RadialBurst", (9.0, 6.0, 3.0), (_BURST,), _RIBBONS, _sized((1.0, 2.5), (0.12, 0.3))),
     "NS_MixarBlood": ("RadialBurst", (0.35, 0.01, 0.01), (_BURST,), _RIBBONS, _sized((3.0, 7.0), (0.2, 0.4))),
+    "NS_MixarBlink": ("RadialBurst", (14.0, 0.3, 0.15), (_BURST,), _RIBBONS, _sized((1.2, 2.2), (0.06, 0.1))),
+    "NS_MixarExplosion": ("RadialBurst", (14.0, 5.0, 1.2), (_BURST,), _RIBBONS, _sized((80.0, 220.0), (0.6, 1.8))),
 }
 
 
