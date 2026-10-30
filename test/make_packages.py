@@ -12,7 +12,11 @@ Writes into <out dir>:
   with only the mesh named — it must still import skinned;
 - ``UEQA_Course``: a small winnable level (coins, a hinged door in the only
   gap of a wall, the flag behind it, a spike, a spawn and a checkpoint);
-- ``UEQA_Hero``: the rigged character (a Tripo auto-rig), when given.
+- ``UEQA_Hero``: the rigged character (a Tripo auto-rig), when given;
+- ``UEQA_Rifle``: a rifle by the weapon convention (origin on the pistol
+  grip, barrel toward Blender -Y, top up), ``mixar_role=weapon``;
+- ``UEQA_Arena``: a small shooter map (floor, walls, cover crates, a mid
+  wall with gaps) with CT and T spawn markers (``mixar_team``).
 
 The exporter is loaded straight from the client's ``space_mixie_chat/core``
 folder as a standalone package, so nothing else of the app is needed.
@@ -214,8 +218,86 @@ def hero(glb):
     print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
 
 
+def rifle():
+    """A rifle by the weapon convention: origin where the right hand grips,
+    barrel toward Blender -Y, top up; about 0.9 m long."""
+    from mathutils import Matrix  # noqa: PLC0415 - Blender only
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    parts = []
+    for size, at, rot in (((0.055, 0.32, 0.075), (0.0, -0.07, 0.035), 0.0),     # receiver
+                          ((0.05, 0.24, 0.06), (0.0, -0.34, 0.035), 0.0),       # handguard
+                          ((0.045, 0.27, 0.065), (0.0, 0.22, 0.01), 0.1),       # stock
+                          ((0.035, 0.045, 0.11), (0.0, 0.015, -0.05), -0.35),   # pistol grip
+                          ((0.035, 0.07, 0.19), (0.0, -0.13, -0.08), 0.3)):     # magazine
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.0))
+        part = bpy.context.object
+        part.data.transform(Matrix.Diagonal((*size, 1.0)))
+        part.data.transform(Matrix.Rotation(rot, 4, "X"))
+        part.data.transform(Matrix.Translation(at))
+        parts.append(part)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.012, depth=0.36, location=(0.0, -0.6, 0.045),
+                                        rotation=(math.radians(90), 0.0, 0.0))
+    parts.append(bpy.context.object)
+    bpy.ops.object.select_all(action="DESELECT")
+    for part in parts:
+        part.select_set(True)
+    bpy.context.view_layer.objects.active = parts[0]
+    bpy.ops.object.join()
+    gun = bpy.context.object
+    gun.name = gun.data.name = "Rifle"
+    gun.data.materials.append(material("M_Rifle", (0.12, 0.11, 0.1)))
+    gun["mixar_role"], gun["mixar_body"], gun["mixar_collision"] = "weapon", "none", "none"
+    result = export_package.export_package(["Rifle"], fmt="fbx", folder="UEQA_Rifle", engine="unreal",
+                                           bake_materials=False)
+    print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
+
+
+def arena():
+    """A 40 x 24 m shooter map: walls, cover, a mid wall with three gaps, T
+    spawns in the west, CT spawns in the east."""
+    from mathutils import Matrix  # noqa: PLC0415 - Blender only
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    names = []
+
+    def box(name, size, at, tags, rgb):
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.0))
+        obj = bpy.context.object
+        obj.data.transform(Matrix.Diagonal((*size, 1.0)))
+        obj.location = at
+        obj.name = obj.data.name = name
+        obj.data.materials.append(material(f"M_{name}", rgb))
+        for key, value in tags.items():
+            obj[key] = value
+        names.append(name)
+
+    static = {"mixar_role": "prop", "mixar_body": "static", "mixar_collision": "box"}
+    sand, wall, crate = (0.62, 0.52, 0.38), (0.72, 0.62, 0.46), (0.45, 0.32, 0.18)
+    box("Floor", (40.0, 24.0, 0.2), (0.0, 0.0, -0.1), static, sand)
+    for i, (size, at) in enumerate((((40.0, 0.4, 3.5), (0.0, 12.0, 1.75)), ((40.0, 0.4, 3.5), (0.0, -12.0, 1.75)),
+                                    ((0.4, 24.0, 3.5), (20.0, 0.0, 1.75)), ((0.4, 24.0, 3.5), (-20.0, 0.0, 1.75)))):
+        box(f"Wall_{i}", size, at, static, wall)
+    for i, (y0, y1) in enumerate(((-12.0, -7.0), (-4.5, -1.2), (1.2, 4.5), (7.0, 12.0))):
+        box(f"Mid_{i}", (0.6, y1 - y0, 3.0), (0.0, (y0 + y1) / 2, 1.5), static, wall)
+    for i, (x, y) in enumerate(((-8.0, 5.0), (-8.0, -6.0), (8.0, 6.0), (8.0, -5.0), (-3.0, 0.0), (3.5, 0.5))):
+        box(f"Crate_{i}", (1.4, 1.4, 1.4), (x, y, 0.7), static, crate)
+    for i, y in enumerate((-3.0, 0.0, 3.0)):
+        box(f"SpawnT_{i}", (0.8, 0.8, 0.05), (-17.0, y, 0.025),
+            {"mixar_role": "spawn", "mixar_team": "t", "mixar_body": "none", "mixar_collision": "none"},
+            (0.9, 0.6, 0.2))
+        box(f"SpawnCT_{i}", (0.8, 0.8, 0.05), (17.0, y, 0.025),
+            {"mixar_role": "spawn", "mixar_team": "ct", "mixar_body": "none", "mixar_collision": "none"},
+            (0.2, 0.4, 0.9))
+    result = export_package.export_package(names, fmt="fbx", folder="UEQA_Arena", engine="unreal",
+                                           bake_materials=False)
+    print("PACKAGE", result.get("folder"), result.get("verification", {}).get("issues"))
+
+
 prop_yard()
 course()
 robot()
+rifle()
+arena()
 if rig:
     hero(rig)

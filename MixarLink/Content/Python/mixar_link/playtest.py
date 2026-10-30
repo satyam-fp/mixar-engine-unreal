@@ -151,12 +151,20 @@ class _Run:
                 result = yield from self.walk_to(unreal.Vector(*target), _clamp(step.get("timeout", 15.0), 1.0, 60.0))
             elif "prove_loop" in step:
                 result = yield from self.prove_loop(_clamp(step.get("timeout", 15.0), 1.0, 60.0))
+            elif "fire" in step:
+                result = yield from self.fire(_clamp(step.get("fire") if not isinstance(step.get("fire"), bool)
+                                                     else 0.1, 0.05, 10.0))
+            elif "reload" in step:
+                result = self.flag("ReloadHeld")
+            elif "aim_at" in step:
+                result = self.aim_at(step["aim_at"])
             elif "inspect" in step:
                 result = self.inspect(step["inspect"])
             elif "state" in step:
                 result = {}
             else:
-                result = {"error": "unknown step; use hold, press, wait, walk_to, prove_loop, inspect or state"}
+                result = {"error": "unknown step; use hold, press, wait, walk_to, prove_loop, inspect, state "
+                                   "(shooter: fire, reload, aim_at)"}
             result["step"] = step
             result["state"] = self.state()
             self.results.append(result)
@@ -256,6 +264,48 @@ class _Run:
         if seen_deaths > deaths_at_start:
             result["died"] = seen_deaths - deaths_at_start
         return result
+
+    # -- shooter --------------------------------------------------------------
+
+    def _shooter(self):
+        player = _player(self.world)
+        if player is None or not _has(player, "FireHeld"):
+            return None
+        return player
+
+    def fire(self, seconds: float):
+        """Hold the trigger (the shooter player's FireHeld) for ``seconds``."""
+        player = self._shooter()
+        if player is None:
+            return {"error": "fire needs a shooter level (new_scene template=shooter)"}
+        before = player.get_editor_property("Ammo")
+        player.set_editor_property("FireHeld", True)
+        yield from _sleep(seconds)
+        if unreal.SystemLibrary.is_valid(player):
+            player.set_editor_property("FireHeld", False)
+        yield
+        return {"shots": before - player.get_editor_property("Ammo") if unreal.SystemLibrary.is_valid(player) else 0}
+
+    def flag(self, name: str) -> dict:
+        player = self._shooter()
+        if player is None:
+            return {"error": "reload needs a shooter level (new_scene template=shooter)"}
+        player.set_editor_property(name, True)
+        return {}
+
+    def aim_at(self, point) -> dict:
+        """Turn the view to a Blender-frame point."""
+        try:
+            target = unreal.Vector(*frames.from_blender(point))
+        except Exception:  # noqa: BLE001
+            return {"error": "aim_at takes [x, y, z] (Blender frame)"}
+        camera = unreal.GameplayStatics.get_player_camera_manager(self.world, 0)
+        controller = unreal.GameplayStatics.get_player_controller(self.world, 0)
+        if camera is None or controller is None:
+            return {"error": "the game has no player view"}
+        look = unreal.MathLibrary.find_look_at_rotation(camera.get_camera_location(), target)
+        controller.set_control_rotation(look)
+        return {"pitch": round(look.pitch, 1), "yaw": round(look.yaw, 1)}
 
     def _deaths(self) -> int:
         try:
@@ -359,6 +409,14 @@ def _proof(out: dict) -> str:
     return "won_by_steps" if out["fresh_start"] else "won_not_fresh"
 
 
+def _has(obj, name: str) -> bool:
+    try:
+        obj.get_editor_property(name)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def _clamp(value, lo: float, hi: float) -> float:
     try:
         return max(lo, min(float(value), hi))
@@ -395,6 +453,9 @@ def _read(actor, key: str):
         return [round(r.roll, 2), round(r.pitch, 2), round(r.yaw, 2)], False
     if key == "hidden":
         return bool(actor.get_editor_property("hidden")), False
+    if key == "bounds":  # the rendered size in metres (a pose gone wrong shows here)
+        _, extent = actor.get_actor_bounds(False)
+        return [round(extent.x / 50.0, 2), round(extent.y / 50.0, 2), round(extent.z / 50.0, 2)], False
     obj, name = nodes._target(actor, key)  # Component.Property, or a component's own
     return _plain(obj.get_editor_property(name)), False
 

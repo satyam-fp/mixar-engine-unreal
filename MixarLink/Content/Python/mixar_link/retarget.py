@@ -141,8 +141,20 @@ def retarget_clips(target, retargeter: str, clips: list, folder: str, name: str,
     inputs.set_editor_property("include_referenced_assets", references)
     inputs.set_editor_property("overwrite_existing_files", True)
     created = unreal.IKRetargetBatchOperation.run_batch_retarget(inputs)
+    for data in created:
+        lock_root(unreal.load_asset(str(data.package_name)))
     unreal.EditorAssetLibrary.save_directory(anims)
     return [str(a.package_name) for a in created]
+
+
+def lock_root(anim) -> None:
+    """Keep a retargeted clip's root bone at its reference pose. Several
+    Mannequin clips (the rifle aim idle, reload, deaths, equip) carry a root
+    translation that, retargeted onto a Mixar rig, threw the whole body metres
+    away from its actor: the character vanished while it played."""
+    if isinstance(anim, unreal.AnimSequence):
+        anim.set_editor_property("force_root_lock", True)
+        anim.set_editor_property("enable_root_motion", False)
 
 
 def retargeted_path(clip: str, folder: str, name: str) -> str:

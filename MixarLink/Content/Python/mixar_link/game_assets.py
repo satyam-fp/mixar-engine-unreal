@@ -21,7 +21,10 @@ from . import MIXAR_FOLDER
 AUDIO = f"{MIXAR_FOLDER}/Game/Audio"
 FX = f"{MIXAR_FOLDER}/Game/FX"
 SOUNDS = ("S_MixarPickup", "S_MixarCheckpoint", "S_MixarHurt", "S_MixarDoor", "S_MixarWin", "S_MixarWind",
-          "S_MixarMusic")
+          "S_MixarMusic", "S_MixarGunshot", "S_MixarFootstep", "S_MixarReload", "S_MixarDryfire", "S_MixarHitmarker",
+          "S_MixarHeadshot", "S_MixarRoundstart")
+# Heard in the world (bots' shots and steps): fades with distance, panned.
+ATTENUATION = "SA_MixarWorld"
 LOOPING = {"S_MixarWind", "S_MixarMusic"}
 TEMPLATES = "/Niagara/DefaultAssets/Templates/Systems"
 NIAGARA = "NiagaraToolsets.NiagaraToolset_System"
@@ -33,6 +36,12 @@ EFFECTS = {
                                                             "UpwardMeshBurst")),
     "NS_MixarWin": ("RadialBurst", (10.0, 7.0, 3.0), ("OmnidirectionalBurst", "Ribbon_Trail_Leader",
                                                        "RibbonTrailFollower")),
+    "NS_MixarFlash": ("SimpleExplosion", (16.0, 8.0, 2.5), ("OmnidirectionalBurst", "SimpleSpriteBurst",
+                                                          "UpwardMeshBurst")),
+    "NS_MixarSparks": ("RadialBurst", (9.0, 6.0, 3.0), ("OmnidirectionalBurst", "Ribbon_Trail_Leader",
+                                                         "RibbonTrailFollower")),
+    "NS_MixarBlood": ("SimpleExplosion", (0.35, 0.0, 0.0), ("OmnidirectionalBurst", "SimpleSpriteBurst",
+                                                             "UpwardMeshBurst")),
 }
 
 
@@ -110,5 +119,24 @@ def _effects() -> dict:
     return found
 
 
+def _attenuation() -> dict:
+    path = f"{AUDIO}/{ATTENUATION}"
+    try:
+        asset = unreal.load_asset(path)
+        if asset is None:
+            asset = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+                ATTENUATION, AUDIO, unreal.SoundAttenuation, unreal.SoundAttenuationFactory())
+        settings = asset.get_editor_property("attenuation")
+        for key, value in (("attenuate", True), ("spatialize", True), ("falloff_distance", 6000.0)):
+            settings.set_editor_property(key, value)
+        settings.set_editor_property("attenuation_shape_extents", unreal.Vector(300.0, 0.0, 0.0))
+        asset.set_editor_property("attenuation", settings)
+        unreal.EditorAssetLibrary.save_loaded_asset(asset, False)
+    except Exception as exc:  # noqa: BLE001 - sounds then play unattenuated
+        unreal.log_warning(f"[Mixar Link] the sound attenuation was not made: {exc}")
+        return {}
+    return {ATTENUATION: _path(AUDIO, ATTENUATION)}
+
+
 def ensure() -> dict:
-    return {**_sounds(), **_effects()}
+    return {**_sounds(), **_attenuation(), **_effects()}

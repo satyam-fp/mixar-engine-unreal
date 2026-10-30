@@ -4,7 +4,9 @@
 
 Everything is made here from sine, noise and simple filters (no samples, so
 nothing to license): a pickup chime, a hurt hit, a stone door grinding open,
-a win fanfare, a checkpoint chime, a wind loop and a calm music loop. The two
+a win fanfare, a checkpoint chime, a wind loop and a calm music loop, and the
+shooter's gunshot, footstep, reload, dry fire, hit marker, headshot and
+round-start beeps. The two
 loops end where they start, so they repeat without a click. Mono 16-bit WAV;
 the template game imports them into /Game/Mixar/Game/Audio.
 """
@@ -182,6 +184,72 @@ def music() -> np.ndarray:
     return norm(loop_seam(buf, overlap), 0.5)
 
 
+def gunshot() -> np.ndarray:
+    """A rifle shot up close: a cracking transient, a mid-band body, a low
+    thump and a short room tail."""
+    t = t_axis(0.9)
+    noise = rng.standard_normal(len(t))
+    crack = noise * np.exp(-t / 0.004) * 1.6
+    body = (lowpass(noise, 3200) - lowpass(noise, 280)) * np.exp(-t / 0.045) * 3.2
+    thump = np.sin(2 * np.pi * (55 + 90 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.09) * 0.9
+    tail = lowpass(noise, 900) * np.exp(-t / 0.22) * 0.9 * np.clip(t / 0.01, 0, 1)
+    return fade(norm(crack + body + thump + tail, 0.95), 0.0, 0.15)
+
+
+def footstep() -> np.ndarray:
+    """A boot on dusty stone: a soft low heel and a gritty scuff."""
+    t = t_axis(0.22)
+    noise = rng.standard_normal(len(t))
+    heel = lowpass(noise, 220) * np.exp(-t / 0.025) * 5
+    grit = (noise - lowpass(noise, 2500)) * np.exp(-((t - 0.03) / 0.02) ** 2) * 0.35
+    return fade(norm(heel + grit, 0.7), 0.002, 0.05)
+
+
+def click(freq: float, decay: float = 0.012) -> np.ndarray:
+    t = t_axis(0.12)
+    noise = rng.standard_normal(len(t))
+    return (noise - lowpass(noise, freq)) * np.exp(-t / decay) + 0.4 * np.sin(2 * np.pi * freq * 0.35 * t) * np.exp(-t / decay)
+
+
+def reload() -> np.ndarray:
+    """A rifle reload, 2.4 s: magazine out, magazine in, bolt back and forward."""
+    buf = np.zeros(int(2.4 * RATE))
+    place(buf, click(1800, 0.02), 0.25)
+    place(buf, 0.6 * click(900, 0.04), 0.32)
+    t = t_axis(0.25)
+    place(buf, lowpass(rng.standard_normal(len(t)), 1500) * np.exp(-t / 0.05) * 0.5, 1.15)
+    place(buf, click(2200, 0.015) * 1.2, 1.3)
+    place(buf, click(2600, 0.01), 1.85)
+    place(buf, click(1500, 0.02) * 1.1, 2.0)
+    return fade(norm(buf, 0.75), 0.0, 0.05)
+
+
+def dryfire() -> np.ndarray:
+    return fade(norm(click(2400, 0.008), 0.5), 0.0, 0.03)
+
+
+def hitmarker() -> np.ndarray:
+    t = t_axis(0.09)
+    tone = np.sin(2 * np.pi * 2400 * t) * np.exp(-t / 0.02)
+    return fade(norm(tone + 0.3 * click(4000, 0.005)[: len(t)], 0.55), 0.0, 0.02)
+
+
+def headshot() -> np.ndarray:
+    buf = np.zeros(int(0.7 * RATE))
+    place(buf, bell(hz("A6"), 0.6, 0.18, 0.6), 0.0)
+    place(buf, click(3000, 0.01) * 0.6, 0.0)
+    return fade(norm(buf, 0.6), 0.0, 0.08)
+
+
+def roundstart() -> np.ndarray:
+    buf = np.zeros(int(0.9 * RATE))
+    for i, name in enumerate(("E5", "A5")):
+        t = t_axis(0.18)
+        beep = np.sin(2 * np.pi * hz(name) * t) * np.clip(t / 0.005, 0, 1) * np.clip((0.18 - t) / 0.02, 0, 1)
+        place(buf, 0.6 * beep, 0.25 * i)
+    return fade(norm(buf, 0.6), 0.0, 0.05)
+
+
 def write(name: str, samples: np.ndarray) -> None:
     os.makedirs(OUT, exist_ok=True)
     data = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
@@ -194,5 +262,6 @@ def write(name: str, samples: np.ndarray) -> None:
 
 
 if __name__ == "__main__":
-    for fn in (pickup, checkpoint, hurt, door, win, wind, music):
+    for fn in (pickup, checkpoint, hurt, door, win, wind, music, gunshot, footstep, reload, dryfire, hitmarker,
+               headshot, roundstart):
         write("S_Mixar" + fn.__name__.capitalize(), fn())

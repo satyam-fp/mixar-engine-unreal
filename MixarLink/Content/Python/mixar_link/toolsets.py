@@ -201,7 +201,10 @@ class MixarLinkTools(unreal.ToolsetDefinition):
             overwrite: Replace an existing level of that name.
             template: A playable game around the level: third_person, top_down
                 or platformer (the BP_MixarGameMode rules: pickups open doors, a
-                goal wins once they are open, hazards and falls respawn; a HUD).
+                goal wins once they are open, hazards and falls respawn; a HUD), or
+                shooter (first-person CT vs T rounds with bots; team spawns are
+                spawn markers tagged mixar_team, characters and the weapon come
+                from placed packages).
             ground: Add a 60 m floor.
             player_position: Where the PlayerStart goes (Blender frame).
 
@@ -349,7 +352,8 @@ class MixarLinkTools(unreal.ToolsetDefinition):
         Args:
             steps: JSON list of steps: {hold, seconds} | {press} | {wait} |
                 {walk_to: [x, y, z] Blender frame, timeout} | {prove_loop: true, timeout}
-                | {inspect: {node, properties}} | {state: true}.
+                | {inspect: {node, properties}} | {state: true}; shooter: {fire: seconds}
+                | {reload: true} | {aim_at: [x, y, z]}.
 
         Returns:
             JSON: {"ok", "data": {steps, final_state}}.

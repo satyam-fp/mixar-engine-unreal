@@ -14,6 +14,9 @@ in a template level gets the Mannequin's idle, run and fall clips retargeted
 onto it: the template game plays as it instead of the Mannequin (elsewhere it
 is an ordinary character).
 
+In a ``shooter`` level a rigged ``player`` / ``ally`` / ``enemy`` becomes a
+team's model and a ``weapon`` the rifle everyone holds (``shooter``).
+
 ``new_scene`` lights a level by ``look`` (day, sunset, dawn, night, overcast):
 sun, sky atmosphere, sky light, volumetric clouds, height fog and a post
 process (bloom, exposure, grading). ``floating`` sinks the planet's ground and
@@ -26,7 +29,7 @@ import re
 
 import unreal
 
-from . import MIXAR_FOLDER, config, frames, game, retarget
+from . import MIXAR_FOLDER, config, frames, game, retarget, shooter
 
 LEVELS = f"{MIXAR_FOLDER}/Levels"
 INSTANCE_FOLDER = "Mixar"
@@ -51,7 +54,7 @@ MOVING_ROLES = {"pickup", "door", "hazard", "enemy"}
 # Roles that never shape the navigation mesh: the player walks through the
 # first ones, and dodges hazards and enemies rather than routing around them
 # (a moving one would carve and re-carve the mesh, and paths would come and go).
-WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn", "hazard", "enemy", "player"}
+WALKED_ROLES = {"pickup", "goal", "checkpoint", "trigger", "spawn", "hazard", "enemy", "player", "ally", "weapon"}
 
 
 def _sub(cls):
@@ -198,7 +201,7 @@ def new_scene(name: str, set_as_main: bool, with_defaults: bool, overwrite: bool
     path = f"{LEVELS}/{name}"
     game_mode = None
     if template:
-        classes = game.ensure()
+        classes = game.ensure(template)
         if "error" in classes:
             return classes
         game_mode = classes.get(template)
@@ -372,7 +375,7 @@ def _set_body(actor, component, asset) -> None:
 def _actor_tags(asset) -> list:
     tags = []
     for key in ("mixar_package", "mixar_object", "mixar_role", "mixar_body", "mixar_nav", "mixar_pivot",
-                "mixar_light"):
+                "mixar_light", "mixar_team"):
         value = _meta(asset, key)
         if value:
             tags.append(unreal.Name(f"{key}={value}"))
@@ -398,6 +401,7 @@ def _play_clip(actor, asset, clip: str) -> str:
         anim = unreal.EditorAssetLibrary.load_asset(target)
         if not isinstance(anim, unreal.AnimSequence):
             raise ValueError(f"Retargeting {clip} onto the character made nothing; read log.")
+        retarget.lock_root(anim)
         clip = target
     component = actor.skeletal_mesh_component
     component.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
@@ -468,7 +472,13 @@ def _spawn_package(meshes, at, yaw_deg, instance, folder, parent_actor, animatio
             actor.attach_to_actor(parent_actor, "", unreal.AttachmentRule.KEEP_WORLD,
                                   unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, False)
         placed.append(actor)
-        if isinstance(actor, unreal.SkeletalMeshActor) and _meta(asset, "mixar_role") == "player" and _game_info():
+        role = _meta(asset, "mixar_role")
+        if role in ("player", "ally", "enemy", "weapon") and shooter.is_shooter_level(world()):
+            if role == "weapon":
+                shooter.weapon(actor, asset)
+            elif isinstance(actor, unreal.SkeletalMeshActor):
+                clip = shooter.character(actor, asset, role)
+        elif isinstance(actor, unreal.SkeletalMeshActor) and role == "player" and _game_info():
             clip = _player_anim(actor, asset)
         elif animation and isinstance(actor, unreal.SkeletalMeshActor):
             clip = _play_clip(actor, asset, animation)

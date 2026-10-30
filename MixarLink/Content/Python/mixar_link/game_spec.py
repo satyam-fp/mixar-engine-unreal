@@ -37,7 +37,7 @@ and wind play (``new_scene`` makes it; ``set_property`` edits it).
 """
 
 # Template ids (the GameMode's ``Template`` variable).
-TEMPLATES = {"third_person": 0, "top_down": 1, "platformer": 2}
+TEMPLATES = {"third_person": 0, "top_down": 1, "platformer": 2, "shooter": 3}
 
 ACTOR = "/Script/Engine.Actor"
 CHARACTER = "/Script/Engine.Character"
@@ -405,6 +405,9 @@ FX_EVENTS = (("pickup", "S_MixarPickup", 0.8, "NS_MixarPickup"), ("hurt", "S_Mix
              ("win", "S_MixarWin", 0.9, "NS_MixarWin"))
 
 
+FX_SCALE = 0.3  # the template systems are metres across at 1
+
+
 def fx_functions(assets: dict) -> list:
     """``MixarFx(Event, Where)`` and ``MixarAmbience(Music, Wind)`` over the
     sounds and effects ``game_assets`` made ({name: object path}); a missing
@@ -415,7 +418,8 @@ def fx_functions(assets: dict) -> list:
         if sound in assets:
             body.append(f'(Audio|PlaySound2D :Sound "{assets[sound]}" :VolumeMultiplier {volume})')
         if effect in assets:
-            body.append(f'(Niagara|SpawnSystematLocation :SystemTemplate "{assets[effect]}" :Location Where)')
+            body.append(f'(Niagara|SpawnSystematLocation :SystemTemplate "{assets[effect]}" :Location Where '
+                        f':Scale (Math|Vector|MakeVector :X {FX_SCALE} :Y {FX_SCALE} :Z {FX_SCALE}))')
         if body:
             branches.append((event, body))
     fx = ""

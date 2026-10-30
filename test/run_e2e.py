@@ -225,6 +225,7 @@ def package_checks(mcp, toolset: str, packages: str, project: str) -> None:
 
     game_checks(mcp, toolset, packages)
     rig_checks(mcp, toolset, packages)
+    shooter_checks(mcp, toolset, packages)
 
     set_mode(project, "plugin")  # the user's own project: Mixar's own levels only
     ok, data = call(mcp, toolset, "open_scene", {"scene": "/Game/ThirdPerson/Lvl_ThirdPerson"})
@@ -424,6 +425,49 @@ def character_checks(mcp, toolset: str, packages: str) -> None:
     call(mcp, toolset, "stop", {})
     call(mcp, toolset, "remove_node", {"node": "Mixar/Chaser"})
     call(mcp, toolset, "remove_node", {"node": "Mixar/Player"})
+    shutil.rmtree(os.path.dirname(enemy), ignore_errors=True)
+
+
+def shooter_checks(mcp, toolset: str, packages: str) -> None:
+    """0.5: the shooter template — arena, rifle, a CT and a T model; rounds
+    with bots, the player's rifle fires and reloads, bots fight."""
+    for name in ("UEQA_Arena", "UEQA_Rifle"):
+        ok, data = call(mcp, toolset, "import_package", {"source_dir": os.path.join(packages, name), "folder": name})
+        check(f"import_package: {name}", ok, data.get("error"))
+    enemy = _with_role(packages, "UEQA_Hero", "enemy")
+    ok, data = call(mcp, toolset, "import_package", {"source_dir": enemy, "folder": "UEQA_Raider"})
+    ok, data = call(mcp, toolset, "new_scene", {**NEW_SCENE, "name": "E2EShooter", "template": "shooter",
+                                                "overwrite": True, "look": "day", "title": "Arena"})
+    check("new_scene: shooter template",
+          ok and data.get("game_mode") == "/Game/Mixar/Game/BP_MixarShooterGameMode", data)
+    for scene, label in (("/Game/Mixar/UEQA_Arena", ""), ("/Game/Mixar/UEQA_Rifle", "Rifle"),
+                         ("/Game/Mixar/UEQA_Hero", "CTModel"), ("/Game/Mixar/UEQA_Raider", "TModel")):
+        ok, data = call(mcp, toolset, "place", {"scene": scene, "name": label, "position": [0, 0, 0],
+                                                "parent": "", "animation": ""})
+        check(f"place (shooter): {scene.rsplit('/', 1)[-1]}", ok, data)
+        if label.endswith("Model"):
+            check(f"place: {label} plays the retargeted rifle set", "MF_Rifle_Idle_ADS" in data.get("animation", ""),
+                  data.get("animation"))
+    ok, data = call(mcp, toolset, "play", {"scene": "current"})
+    check("play: the shooter", ok and data.get("playing"), data)
+    ok, data = playtest(mcp, toolset, [{"wait": 2}, {"aim_at": [-17, 0, 1.2]}, {"fire": 1.0}, {"reload": True},
+                                       {"wait": 3}])
+    steps = data.get("steps") or [{}] * 5
+    start = steps[0].get("state", {}) if steps else {}
+    check("shooter: round 1, 5 v 5", start.get("round") == 1 and start.get("alive_ct") == 5
+          and start.get("alive_t") == 5, start)
+    shots = (steps[2] if len(steps) > 2 else {}).get("shots", 0)
+    check("shooter: the rifle fires (about 10 shots a second)", 6 <= shots <= 11, steps[2] if len(steps) > 2 else data)
+    final = data.get("final_state") or {}
+    check("shooter: reload fills the magazine", final.get("ammo") == 30 and final.get("reserve", 90) < 90, final)
+    ok, png = call(mcp, toolset, "capture", {"source": "game", "max_width": 960})
+    check("capture: first-person view", ok and (png.get("width") or 0) > 0)
+    ok, data = playtest(mcp, toolset, [{"wait": 25}])
+    final = data.get("final_state") or {}
+    check("shooter: bots fight (fewer than 10 alive, or a round ended)",
+          final.get("alive_ct", 5) + final.get("alive_t", 5) < 10 or final.get("score_ct", 0)
+          + final.get("score_t", 0) > 0, final)
+    call(mcp, toolset, "stop", {})
     shutil.rmtree(os.path.dirname(enemy), ignore_errors=True)
 
 

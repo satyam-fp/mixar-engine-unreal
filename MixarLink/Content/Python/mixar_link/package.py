@@ -25,7 +25,7 @@ import unreal
 from . import MIXAR_FOLDER, retarget
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9 ._-]{1,96}$")
-TAG_KEYS = ("role", "body", "nav", "pivot", "light")
+TAG_KEYS = ("role", "body", "nav", "pivot", "light", "team")
 
 
 def safe_folder(folder: str) -> str:
